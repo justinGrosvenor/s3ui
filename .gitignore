@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# PyQt
+*.qmlc
+*.jsc
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Distribution / packaging
+*.tar.gz
+*.zip
+
+# PyInstaller
+*.spec
+*.manifest
+
+# Logs
+*.log
+
+# App data (never commit user data)
+*.db
+*.db-wal
+*.db-shm
+
+# Lock files
+*.lock
+!uv.lock
+
+# Secrets
+.env
+.env.*
+credentials.json

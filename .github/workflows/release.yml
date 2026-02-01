@@ -1,0 +1,163 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: pytest --tb=short
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      # Build .app bundle
+      - run: pyinstaller build/s3ui.spec --noconfirm
+
+      # Code sign (if certificate is available)
+      - name: Import signing certificate
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$MACOS_CERTIFICATE_P12" | base64 -d > cert.p12
+          security create-keychain -p "" build.keychain
+          security import cert.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "" build.keychain
+          security list-keychains -d user -s build.keychain
+
+      - name: Sign and notarize
+        if: env.MACOS_CERTIFICATE_P12 != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: build/scripts/sign-macos.sh "${{ github.ref_name }}"
+
+      # Create DMG (unsigned fallback if no certificate)
+      - name: Create DMG
+        if: env.MACOS_CERTIFICATE_P12 == ''
+        run: |
+          hdiutil create -volname "S3UI" -srcfolder dist/S3UI.app \
+              -ov -format UDZO "S3UI-${{ github.ref_name }}-macos.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: "S3UI-*.dmg"
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]"
+      - run: pytest --tb=short
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      # Build .exe
+      - run: pyinstaller build/s3ui.spec --noconfirm
+
+      # Create installer
+      - uses: joncloud/makensis-action@v4
+        with:
+          script-file: build/installer.nsi
+          arguments: "/DVERSION=${{ github.ref_name }}"
+
+      # Create portable .zip
+      - run: Compress-Archive -Path dist/S3UI -DestinationPath "S3UI-${{ github.ref_name }}-windows-portable.zip"
+        shell: pwsh
+
+      # Code sign (if certificate is available)
+      - name: Sign installer
+        if: env.WINDOWS_CERTIFICATE_PFX != ''
+        env:
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$WINDOWS_CERTIFICATE_PFX" > cert.b64
+          certutil -decode cert.b64 cert.pfx
+          signtool sign /f cert.pfx /p "$WINDOWS_CERTIFICATE_PASSWORD" /tr http://timestamp.digicert.com /td sha256 /fd sha256 "S3UI-Setup-${{ github.ref_name }}.exe"
+        shell: bash
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-builds
+          path: |
+            S3UI-Setup-*.exe
+            S3UI-*-portable.zip
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libxcb-xinerama0 libxkbcommon-x11-0 \
+              fuse libfuse2
+
+      - run: pip install -e ".[dev]"
+      - run: pytest --tb=short
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      # Build with PyInstaller
+      - run: pyinstaller build/s3ui.spec --noconfirm
+
+      # Package as AppImage
+      - run: build/scripts/make-appimage.sh "${{ github.ref_name }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: "S3UI-*.AppImage"
+
+  publish-pypi:
+    runs-on: ubuntu-latest
+    needs: [build-macos, build-windows, build-linux]
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install build
+      - run: python -m build
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [build-macos, build-windows, build-linux, publish-pypi]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            S3UI-*.dmg
+            S3UI-Setup-*.exe
+            S3UI-*-portable.zip
+            S3UI-*.AppImage

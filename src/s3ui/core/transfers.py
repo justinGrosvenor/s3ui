@@ -55,9 +55,7 @@ class TransferEngine(QObject):
 
     def enqueue(self, transfer_id: int) -> None:
         """Submit a transfer to the worker pool."""
-        row = self._db.fetchone(
-            "SELECT * FROM transfers WHERE id = ?", (transfer_id,)
-        )
+        row = self._db.fetchone("SELECT * FROM transfers WHERE id = ?", (transfer_id,))
         if not row:
             logger.warning("Cannot enqueue transfer %d: not found", transfer_id)
             return
@@ -70,13 +68,21 @@ class TransferEngine(QObject):
 
         if row["direction"] == "upload":
             worker = UploadWorker(
-                transfer_id, self._s3, self._db, self._bucket,
-                pause_evt, cancel_evt,
+                transfer_id,
+                self._s3,
+                self._db,
+                self._bucket,
+                pause_evt,
+                cancel_evt,
             )
         else:
             worker = DownloadWorker(
-                transfer_id, self._s3, self._db, self._bucket,
-                pause_evt, cancel_evt,
+                transfer_id,
+                self._s3,
+                self._db,
+                self._bucket,
+                pause_evt,
+                cancel_evt,
             )
 
         # Connect signals
@@ -99,8 +105,7 @@ class TransferEngine(QObject):
     def resume(self, transfer_id: int) -> None:
         """Resume a paused transfer by re-enqueuing it."""
         self._db.execute(
-            "UPDATE transfers SET status = 'queued', updated_at = datetime('now') "
-            "WHERE id = ?",
+            "UPDATE transfers SET status = 'queued', updated_at = datetime('now') WHERE id = ?",
             (transfer_id,),
         )
         self.enqueue(transfer_id)
@@ -156,9 +161,7 @@ class TransferEngine(QObject):
                     "updated_at = datetime('now') WHERE id = ?",
                     (row["id"],),
                 )
-                logger.warning(
-                    "Transfer %d: source file missing: %s", row["id"], local
-                )
+                logger.warning("Transfer %d: source file missing: %s", row["id"], local)
                 continue
 
             if row["direction"] == "download" and not local.parent.exists():
@@ -168,9 +171,7 @@ class TransferEngine(QObject):
                     "updated_at = datetime('now') WHERE id = ?",
                     (row["id"],),
                 )
-                logger.warning(
-                    "Transfer %d: dest dir missing: %s", row["id"], local.parent
-                )
+                logger.warning("Transfer %d: dest dir missing: %s", row["id"], local.parent)
                 continue
 
             # Reset in_progress to queued
@@ -213,8 +214,7 @@ class TransferEngine(QObject):
             return
         if self._bucket_id is None:
             row = self._db.fetchone(
-                "SELECT id FROM transfers WHERE status = 'queued' "
-                "ORDER BY created_at ASC LIMIT 1"
+                "SELECT id FROM transfers WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
             )
         else:
             row = self._db.fetchone(
@@ -238,9 +238,7 @@ class TransferEngine(QObject):
             return 0
 
         # Collect known upload IDs from our database
-        rows = self._db.fetchall(
-            "SELECT upload_id FROM transfers WHERE upload_id IS NOT NULL"
-        )
+        rows = self._db.fetchall("SELECT upload_id FROM transfers WHERE upload_id IS NOT NULL")
         known_ids = {r["upload_id"] for r in rows}
 
         cutoff = datetime.datetime.now(datetime.UTC) - datetime.timedelta(hours=24)
@@ -258,23 +256,24 @@ class TransferEngine(QObject):
 
             if initiated < cutoff:
                 try:
-                    self._s3.abort_multipart_upload(
-                        self._bucket, upload["Key"], uid
-                    )
+                    self._s3.abort_multipart_upload(self._bucket, upload["Key"], uid)
                     aborted += 1
                     logger.info(
                         "Aborted orphaned multipart upload: key=%s upload_id=%s",
-                        upload["Key"], uid,
+                        upload["Key"],
+                        uid,
                     )
                 except Exception:
                     logger.warning(
                         "Failed to abort orphaned upload: key=%s upload_id=%s",
-                        upload["Key"], uid,
+                        upload["Key"],
+                        uid,
                     )
             else:
                 logger.debug(
                     "Skipping recent orphaned upload: key=%s upload_id=%s (< 24h old)",
-                    upload["Key"], uid,
+                    upload["Key"],
+                    uid,
                 )
 
         if aborted:

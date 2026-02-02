@@ -165,7 +165,9 @@ class ListingCache:
             # Don't reset mutation_counter — it tracks total mutations
             logger.debug(
                 "Merged revalidation for '%s': %d server + %d optimistic items",
-                prefix, len(new_items), len(optimistic),
+                prefix,
+                len(new_items),
+                len(optimistic),
             )
             return True
 

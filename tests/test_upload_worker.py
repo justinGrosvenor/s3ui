@@ -75,8 +75,12 @@ class TestSmallUpload:
 
             tid = _create_transfer(db, bucket_id, "small.txt", src)
             worker = UploadWorker(
-                tid, client, db, "test-bucket",
-                threading.Event(), threading.Event(),
+                tid,
+                client,
+                db,
+                "test-bucket",
+                threading.Event(),
+                threading.Event(),
             )
 
             finished = []
@@ -102,8 +106,12 @@ class TestMultipartUpload:
 
             tid = _create_transfer(db, bucket_id, "large.bin", src)
             worker = UploadWorker(
-                tid, client, db, "test-bucket",
-                threading.Event(), threading.Event(),
+                tid,
+                client,
+                db,
+                "test-bucket",
+                threading.Event(),
+                threading.Event(),
             )
 
             finished = []
@@ -130,8 +138,12 @@ class TestUploadPause:
             pause_evt.set()  # pre-set to pause immediately
 
             worker = UploadWorker(
-                tid, client, db, "test-bucket",
-                pause_evt, threading.Event(),
+                tid,
+                client,
+                db,
+                "test-bucket",
+                pause_evt,
+                threading.Event(),
             )
             _run_worker(worker)
 
@@ -154,8 +166,12 @@ class TestUploadCancel:
             cancel_evt.set()  # pre-set to cancel immediately
 
             worker = UploadWorker(
-                tid, client, db, "test-bucket",
-                threading.Event(), cancel_evt,
+                tid,
+                client,
+                db,
+                "test-bucket",
+                threading.Event(),
+                cancel_evt,
             )
             _run_worker(worker)
 
@@ -166,17 +182,17 @@ class TestUploadCancel:
 class TestUploadFailure:
     def test_missing_source_file(self, db, bucket_id, profile, tmp_path):
         with mock_aws():
-            boto3.client("s3", region_name="us-east-1").create_bucket(
-                Bucket="test-bucket"
-            )
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
             client = S3Client(profile)
 
-            tid = _create_transfer(
-                db, bucket_id, "gone.txt", tmp_path / "nonexistent.txt"
-            )
+            tid = _create_transfer(db, bucket_id, "gone.txt", tmp_path / "nonexistent.txt")
             worker = UploadWorker(
-                tid, client, db, "test-bucket",
-                threading.Event(), threading.Event(),
+                tid,
+                client,
+                db,
+                "test-bucket",
+                threading.Event(),
+                threading.Event(),
             )
 
             failed = []

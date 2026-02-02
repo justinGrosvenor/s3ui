@@ -131,8 +131,7 @@ class StatsDialog(QDialog):
         self._progress_label.setVisible(False)
 
         self._summary.setText(
-            f"Total: {snapshot.total_count:,} objects, "
-            f"{_format_size(snapshot.total_bytes)}"
+            f"Total: {snapshot.total_count:,} objects, {_format_size(snapshot.total_bytes)}"
         )
 
         # Breakdown table
@@ -153,9 +152,7 @@ class StatsDialog(QDialog):
             self._largest_table.setRowCount(len(snapshot.top_largest))
             for i, entry in enumerate(snapshot.top_largest):
                 self._largest_table.setItem(i, 0, QTableWidgetItem(entry["key"]))
-                self._largest_table.setItem(
-                    i, 1, QTableWidgetItem(_format_size(entry["size"]))
-                )
+                self._largest_table.setItem(i, 1, QTableWidgetItem(_format_size(entry["size"])))
 
     def _on_error(self, msg: str) -> None:
         self._scan_btn.setVisible(True)

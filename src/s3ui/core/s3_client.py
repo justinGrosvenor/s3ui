@@ -51,7 +51,9 @@ class S3Client:
         self._profile_name = profile.name
         logger.info(
             "S3Client created for profile '%s' region '%s' (aws_profile=%s)",
-            profile.name, profile.region, profile.is_aws_profile,
+            profile.name,
+            profile.region,
+            profile.is_aws_profile,
         )
 
     def _record(self, request_type: str, count: int = 1) -> None:
@@ -98,9 +100,7 @@ class S3Client:
             prefixes: list[str] = []
 
             paginator = self._client.get_paginator("list_objects_v2")
-            pages = paginator.paginate(
-                Bucket=bucket, Prefix=prefix, Delimiter=delimiter
-            )
+            pages = paginator.paginate(Bucket=bucket, Prefix=prefix, Delimiter=delimiter)
 
             page_count = 0
             for page in pages:
@@ -112,7 +112,7 @@ class S3Client:
                     # Skip the prefix itself (S3 may return the prefix as an object)
                     if key == prefix:
                         continue
-                    name = key[len(prefix):] if prefix else key
+                    name = key[len(prefix) :] if prefix else key
                     objects.append(
                         S3Item(
                             name=name,
@@ -127,15 +127,15 @@ class S3Client:
 
                 for cp in page.get("CommonPrefixes", []):
                     p = cp["Prefix"]
-                    name = p[len(prefix):].rstrip("/") if prefix else p.rstrip("/")
+                    name = p[len(prefix) :].rstrip("/") if prefix else p.rstrip("/")
                     prefixes.append(p)
-                    objects.append(
-                        S3Item(name=name, key=p, is_prefix=True)
-                    )
+                    objects.append(S3Item(name=name, key=p, is_prefix=True))
 
             logger.debug(
                 "list_objects returned %d items, %d prefixes across %d pages",
-                len(objects), len(prefixes), page_count,
+                len(objects),
+                len(prefixes),
+                page_count,
             )
             return objects, prefixes
         except Exception as e:
@@ -211,14 +211,10 @@ class S3Client:
         except Exception as e:
             self._handle_error(e, "delete_objects")
 
-    def copy_object(
-        self, src_bucket: str, src_key: str, dst_bucket: str, dst_key: str
-    ) -> None:
+    def copy_object(self, src_bucket: str, src_key: str, dst_bucket: str, dst_key: str) -> None:
         """Server-side copy with metadata preservation."""
         try:
-            logger.debug(
-                "copy_object %s/%s -> %s/%s", src_bucket, src_key, dst_bucket, dst_key
-            )
+            logger.debug("copy_object %s/%s -> %s/%s", src_bucket, src_key, dst_bucket, dst_key)
             self._record("copy")
             self._client.copy_object(
                 Bucket=dst_bucket,
@@ -250,7 +246,10 @@ class S3Client:
         try:
             logger.debug(
                 "upload_part bucket=%s key='%s' part=%d size=%d",
-                bucket, key, part_number, len(body),
+                bucket,
+                key,
+                part_number,
+                len(body),
             )
             self._record("put")
             response = self._client.upload_part(
@@ -272,7 +271,9 @@ class S3Client:
         try:
             logger.debug(
                 "complete_multipart_upload bucket=%s key='%s' parts=%d",
-                bucket, key, len(parts),
+                bucket,
+                key,
+                len(parts),
             )
             self._record("put")
             self._client.complete_multipart_upload(
@@ -289,17 +290,15 @@ class S3Client:
         try:
             logger.debug(
                 "abort_multipart_upload bucket=%s key='%s' upload_id=%s",
-                bucket, key, upload_id,
+                bucket,
+                key,
+                upload_id,
             )
-            self._client.abort_multipart_upload(
-                Bucket=bucket, Key=key, UploadId=upload_id
-            )
+            self._client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
         except Exception as e:
             self._handle_error(e, "abort_multipart_upload")
 
-    def list_parts(
-        self, bucket: str, key: str, upload_id: str
-    ) -> list[dict]:
+    def list_parts(self, bucket: str, key: str, upload_id: str) -> list[dict]:
         """List uploaded parts for a multipart upload."""
         try:
             logger.debug("list_parts bucket=%s key='%s' upload_id=%s", bucket, key, upload_id)
@@ -309,11 +308,13 @@ class S3Client:
             while True:
                 response = self._client.list_parts(**kwargs)
                 for p in response.get("Parts", []):
-                    parts.append({
-                        "PartNumber": p["PartNumber"],
-                        "ETag": p["ETag"],
-                        "Size": p["Size"],
-                    })
+                    parts.append(
+                        {
+                            "PartNumber": p["PartNumber"],
+                            "ETag": p["ETag"],
+                            "Size": p["Size"],
+                        }
+                    )
                 if response.get("IsTruncated"):
                     kwargs["PartNumberMarker"] = response["NextPartNumberMarker"]
                 else:
@@ -332,11 +333,13 @@ class S3Client:
             while True:
                 response = self._client.list_multipart_uploads(**kwargs)
                 for u in response.get("Uploads", []):
-                    uploads.append({
-                        "Key": u["Key"],
-                        "UploadId": u["UploadId"],
-                        "Initiated": u["Initiated"],
-                    })
+                    uploads.append(
+                        {
+                            "Key": u["Key"],
+                            "UploadId": u["UploadId"],
+                            "Initiated": u["Initiated"],
+                        }
+                    )
                 if response.get("IsTruncated"):
                     kwargs["KeyMarker"] = response["NextKeyMarker"]
                     kwargs["UploadIdMarker"] = response["NextUploadIdMarker"]

@@ -102,11 +102,7 @@ class LocalPaneWidget(QWidget):
     def _setup_model(self) -> None:
         self._model = QFileSystemModel()
         self._model.setRootPath("")
-        self._model.setFilter(
-            QDir.Filter.AllDirs
-            | QDir.Filter.Files
-            | QDir.Filter.NoDotAndDotDot
-        )
+        self._model.setFilter(QDir.Filter.AllDirs | QDir.Filter.Files | QDir.Filter.NoDotAndDotDot)
         self._tree.setModel(self._model)
 
         # Show only Name, Size, Date Modified
@@ -227,4 +223,4 @@ def _format_size(size_bytes: int) -> str:
     elif size_bytes < 1024 * 1024 * 1024:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
     else:
-        return f"{size_bytes / (1024 ** 3):.1f} GB"
+        return f"{size_bytes / (1024**3):.1f} GB"

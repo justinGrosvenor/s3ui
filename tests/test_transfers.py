@@ -45,15 +45,16 @@ def _create_upload(db, bucket_id, key, local_path, status="queued"):
 class TestRestorePending:
     def test_missing_source_marked_failed(self, db, bucket_id, profile, tmp_path, qtbot):
         with mock_aws():
-            boto3.client("s3", region_name="us-east-1").create_bucket(
-                Bucket="test-bucket"
-            )
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
             client = S3Client(profile)
 
             # Create transfer pointing to nonexistent file
             tid = _create_upload(
-                db, bucket_id, "gone.txt",
-                tmp_path / "nonexistent.txt", status="in_progress",
+                db,
+                bucket_id,
+                "gone.txt",
+                tmp_path / "nonexistent.txt",
+                status="in_progress",
             )
 
             engine = TransferEngine(client, db, "test-bucket", max_workers=1)
@@ -64,16 +65,18 @@ class TestRestorePending:
 
     def test_in_progress_reset_to_queued(self, db, bucket_id, profile, tmp_path, qtbot):
         with mock_aws():
-            boto3.client("s3", region_name="us-east-1").create_bucket(
-                Bucket="test-bucket"
-            )
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
             client = S3Client(profile)
 
             src = tmp_path / "existing.txt"
             src.write_text("data")
 
             tid = _create_upload(
-                db, bucket_id, "existing.txt", src, status="in_progress",
+                db,
+                bucket_id,
+                "existing.txt",
+                src,
+                status="in_progress",
             )
 
             engine = TransferEngine(client, db, "test-bucket", max_workers=1)
@@ -89,9 +92,7 @@ class TestRestorePending:
 
     def test_download_missing_dest_dir(self, db, bucket_id, profile, tmp_path, qtbot):
         with mock_aws():
-            boto3.client("s3", region_name="us-east-1").create_bucket(
-                Bucket="test-bucket"
-            )
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
             client = S3Client(profile)
 
             tid = db.execute(
@@ -168,9 +169,7 @@ class TestOrphanCleanup:
 class TestEnqueueAndComplete:
     def test_upload_completes(self, db, bucket_id, profile, tmp_path, qtbot):
         with mock_aws():
-            boto3.client("s3", region_name="us-east-1").create_bucket(
-                Bucket="test-bucket"
-            )
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
             client = S3Client(profile)
 
             src = tmp_path / "upload.txt"
@@ -190,9 +189,7 @@ class TestEnqueueAndComplete:
     def test_concurrency_limit(self, db, bucket_id, profile, tmp_path, qtbot):
         """With max_workers=2, only 2 transfers run at once."""
         with mock_aws():
-            boto3.client("s3", region_name="us-east-1").create_bucket(
-                Bucket="test-bucket"
-            )
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
             client = S3Client(profile)
 
             tids = []

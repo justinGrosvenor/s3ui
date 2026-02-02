@@ -57,9 +57,7 @@ class TestListObjects:
         client, raw = s3_env
         # Create >1000 objects to trigger pagination
         for i in range(1050):
-            raw.put_object(
-                Bucket="test-bucket", Key=f"obj{i:04d}.txt", Body=b"x"
-            )
+            raw.put_object(Bucket="test-bucket", Key=f"obj{i:04d}.txt", Body=b"x")
         objects, _ = client.list_objects("test-bucket")
         assert len(objects) == 1050
 
@@ -97,9 +95,7 @@ class TestDeleteObject:
         client, raw = s3_env
         for i in range(5):
             raw.put_object(Bucket="test-bucket", Key=f"del{i}.txt", Body=b"x")
-        failed = client.delete_objects(
-            "test-bucket", [f"del{i}.txt" for i in range(5)]
-        )
+        failed = client.delete_objects("test-bucket", [f"del{i}.txt" for i in range(5)])
         assert failed == []
         objects, _ = client.list_objects("test-bucket")
         assert len(objects) == 0
@@ -123,9 +119,7 @@ class TestMultipartUpload:
         part_data = [b"a" * 5 * 1024 * 1024, b"b" * 5 * 1024 * 1024, b"c" * 1024]
         parts = []
         for i, data in enumerate(part_data, 1):
-            etag = client.upload_part(
-                "test-bucket", "big.bin", upload_id, i, data
-            )
+            etag = client.upload_part("test-bucket", "big.bin", upload_id, i, data)
             parts.append({"ETag": etag, "PartNumber": i})
 
         client.complete_multipart_upload("test-bucket", "big.bin", upload_id, parts)

@@ -18,9 +18,7 @@ def db(tmp_path: Path) -> Database:
 
 class TestDatabase:
     def test_fresh_db_creates_all_tables(self, db: Database):
-        tables = db.fetchall(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        tables = db.fetchall("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         table_names = {row["name"] for row in tables}
         expected = {
             "buckets",
@@ -38,9 +36,7 @@ class TestDatabase:
         db1 = Database(tmp_path / "idem.db")
         db2 = Database(tmp_path / "idem.db")
         # Both should succeed without error
-        tables = db2.fetchall(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
+        tables = db2.fetchall("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
         assert len(tables) >= 8
         db1.close()
         db2.close()
@@ -80,9 +76,7 @@ class TestDatabase:
             "INSERT INTO buckets (name, region, profile) VALUES (?, ?, ?)",
             ("shared-bucket", "us-east-1", "profile-b"),
         )
-        rows = db.fetchall(
-            "SELECT * FROM buckets WHERE name = ?", ("shared-bucket",)
-        )
+        rows = db.fetchall("SELECT * FROM buckets WHERE name = ?", ("shared-bucket",))
         assert len(rows) == 2
 
     def test_same_bucket_same_profile_rejected(self, db: Database):

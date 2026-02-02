@@ -56,8 +56,12 @@ class TestSmallDownload:
             tid = _create_transfer(db, bucket_id, "small.txt", dest)
 
             worker = DownloadWorker(
-                tid, client, db, "test-bucket",
-                threading.Event(), threading.Event(),
+                tid,
+                client,
+                db,
+                "test-bucket",
+                threading.Event(),
+                threading.Event(),
             )
 
             finished = []
@@ -82,8 +86,12 @@ class TestRangedDownload:
             tid = _create_transfer(db, bucket_id, "large.bin", dest)
 
             worker = DownloadWorker(
-                tid, client, db, "test-bucket",
-                threading.Event(), threading.Event(),
+                tid,
+                client,
+                db,
+                "test-bucket",
+                threading.Event(),
+                threading.Event(),
             )
 
             finished = []
@@ -99,9 +107,7 @@ class TestDownloadPause:
         with mock_aws():
             raw = boto3.client("s3", region_name="us-east-1")
             raw.create_bucket(Bucket="test-bucket")
-            raw.put_object(
-                Bucket="test-bucket", Key="pause.bin", Body=b"p" * (9 * 1024 * 1024)
-            )
+            raw.put_object(Bucket="test-bucket", Key="pause.bin", Body=b"p" * (9 * 1024 * 1024))
             client = S3Client(profile)
 
             dest = tmp_path / "downloads" / "pause.bin"
@@ -112,8 +118,12 @@ class TestDownloadPause:
             pause_evt.set()  # pause immediately
 
             worker = DownloadWorker(
-                tid, client, db, "test-bucket",
-                pause_evt, threading.Event(),
+                tid,
+                client,
+                db,
+                "test-bucket",
+                pause_evt,
+                threading.Event(),
             )
             worker.run()
 
@@ -126,9 +136,7 @@ class TestDownloadCancel:
         with mock_aws():
             raw = boto3.client("s3", region_name="us-east-1")
             raw.create_bucket(Bucket="test-bucket")
-            raw.put_object(
-                Bucket="test-bucket", Key="cancel.bin", Body=b"c" * (9 * 1024 * 1024)
-            )
+            raw.put_object(Bucket="test-bucket", Key="cancel.bin", Body=b"c" * (9 * 1024 * 1024))
             client = S3Client(profile)
 
             dest = tmp_path / "downloads" / "cancel.bin"
@@ -139,8 +147,12 @@ class TestDownloadCancel:
             cancel_evt.set()  # cancel immediately
 
             worker = DownloadWorker(
-                tid, client, db, "test-bucket",
-                threading.Event(), cancel_evt,
+                tid,
+                client,
+                db,
+                "test-bucket",
+                threading.Event(),
+                cancel_evt,
             )
             worker.run()
 
@@ -163,8 +175,12 @@ class TestDownloadFailure:
             tid = _create_transfer(db, bucket_id, "file.txt", dest)
 
             worker = DownloadWorker(
-                tid, client, db, "test-bucket",
-                threading.Event(), threading.Event(),
+                tid,
+                client,
+                db,
+                "test-bucket",
+                threading.Event(),
+                threading.Event(),
             )
 
             failed = []

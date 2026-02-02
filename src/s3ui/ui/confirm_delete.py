@@ -30,9 +30,9 @@ class DeleteConfirmDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # Warning
-        layout.addWidget(QLabel(
-            f"Are you sure you want to delete {count} item{'s' if count != 1 else ''}?"
-        ))
+        layout.addWidget(
+            QLabel(f"Are you sure you want to delete {count} item{'s' if count != 1 else ''}?")
+        )
 
         # File list (first 10)
         file_list = QListWidget()

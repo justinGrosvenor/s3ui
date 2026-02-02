@@ -38,9 +38,9 @@ class CostDialog(QDialog):
         layout.addWidget(QLabel("Daily Breakdown (last 30 days):"))
         self._daily_table = QTableWidget()
         self._daily_table.setColumnCount(5)
-        self._daily_table.setHorizontalHeaderLabels([
-            "Date", "Requests", "Upload", "Download", "Est. Cost"
-        ])
+        self._daily_table.setHorizontalHeaderLabels(
+            ["Date", "Requests", "Upload", "Download", "Est. Cost"]
+        )
         layout.addWidget(self._daily_table)
 
         # Buttons
@@ -69,8 +69,12 @@ class CostDialog(QDialog):
         for i, day in enumerate(days):
             self._daily_table.setItem(i, 0, QTableWidgetItem(day.date))
             total_requests = (
-                day.list_requests + day.get_requests + day.put_requests
-                + day.delete_requests + day.head_requests + day.copy_requests
+                day.list_requests
+                + day.get_requests
+                + day.put_requests
+                + day.delete_requests
+                + day.head_requests
+                + day.copy_requests
             )
             self._daily_table.setItem(i, 1, QTableWidgetItem(str(total_requests)))
             self._daily_table.setItem(i, 2, QTableWidgetItem(f"{day.upload_bytes:,} B"))
@@ -89,8 +93,10 @@ class CostDialog(QDialog):
 
         days = self._cost.get_daily_costs(365)
         with open(path, "w") as f:
-            f.write("date,list_requests,get_requests,put_requests,delete_requests,"
-                    "head_requests,copy_requests,upload_bytes,download_bytes,total_cost\n")
+            f.write(
+                "date,list_requests,get_requests,put_requests,delete_requests,"
+                "head_requests,copy_requests,upload_bytes,download_bytes,total_cost\n"
+            )
             for day in days:
                 f.write(
                     f"{day.date},{day.list_requests},{day.get_requests},"

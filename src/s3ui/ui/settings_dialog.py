@@ -113,8 +113,7 @@ class CredentialsTab(QWidget):
         reply = QMessageBox.question(
             self,
             "Delete Profile",
-            f"Remove profile '{name}'?\n\n"
-            "Credentials will be removed from the system keychain.",
+            f"Remove profile '{name}'?\n\nCredentials will be removed from the system keychain.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -210,11 +209,13 @@ class TransfersTab(QWidget):
         layout.addRow("Max concurrent transfers:", self._max_concurrent)
 
         self._retention_combo = QComboBox()
-        self._retention_combo.addItems([
-            "Clear after session",
-            "Keep for 24 hours",
-            "Keep forever",
-        ])
+        self._retention_combo.addItems(
+            [
+                "Clear after session",
+                "Keep for 24 hours",
+                "Keep forever",
+            ]
+        )
         layout.addRow("Completed transfer retention:", self._retention_combo)
 
         if db:

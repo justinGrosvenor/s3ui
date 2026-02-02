@@ -86,9 +86,7 @@ class TestCredentialStore:
         assert "Invalid access key" in result.error_message
         assert result.error_detail != ""
 
-    def test_test_connection_network_error(
-        self, store: CredentialStore, sample_profile: Profile
-    ):
+    def test_test_connection_network_error(self, store: CredentialStore, sample_profile: Profile):
         from botocore.exceptions import EndpointConnectionError
 
         with patch("boto3.client") as mock_boto:

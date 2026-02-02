@@ -42,7 +42,7 @@ def _format_size(size_bytes: int | None) -> str:
     elif size_bytes < 1024 * 1024 * 1024:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
     else:
-        return f"{size_bytes / (1024 ** 3):.1f} GB"
+        return f"{size_bytes / (1024**3):.1f} GB"
 
 
 def _format_date(dt: datetime | None) -> str:

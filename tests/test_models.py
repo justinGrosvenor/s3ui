@@ -44,7 +44,7 @@ class TestFormatSize:
         assert _format_size(999 * 1024 * 1024) == "999.0 MB"
 
     def test_gb(self):
-        assert _format_size(int(2.4 * 1024 ** 3)) == "2.4 GB"
+        assert _format_size(int(2.4 * 1024**3)) == "2.4 GB"
 
 
 class TestFormatDate:
@@ -118,11 +118,13 @@ class TestS3ObjectModel:
 
     def test_total_size(self, qtbot):
         model = S3ObjectModel()
-        model.set_items([
-            _make_item("a.txt", size=100),
-            _make_item("b.txt", size=200),
-            _make_item("dir/", key="dir/", is_prefix=True),
-        ])
+        model.set_items(
+            [
+                _make_item("a.txt", size=100),
+                _make_item("b.txt", size=200),
+                _make_item("dir/", key="dir/", is_prefix=True),
+            ]
+        )
         assert model.total_size() == 300
 
     def test_item_count(self, qtbot):
@@ -161,11 +163,13 @@ class TestS3ObjectModel:
 
     def test_remove_items_batch(self, qtbot):
         model = S3ObjectModel()
-        model.set_items([
-            _make_item("a.txt"),
-            _make_item("b.txt"),
-            _make_item("c.txt"),
-        ])
+        model.set_items(
+            [
+                _make_item("a.txt"),
+                _make_item("b.txt"),
+                _make_item("c.txt"),
+            ]
+        )
         count = model.remove_items({"a.txt", "c.txt"})
         assert count == 2
         assert model.rowCount() == 1

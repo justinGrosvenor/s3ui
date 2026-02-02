@@ -79,21 +79,13 @@ class UploadWorker(QRunnable):
             try:
                 self._mark_failed(str(e))
             except Exception:
-                logger.exception(
-                    "Failed to mark upload %d as failed", self.transfer_id
-                )
-            self.signals.failed.emit(
-                self.transfer_id, str(e), traceback.format_exc()
-            )
+                logger.exception("Failed to mark upload %d as failed", self.transfer_id)
+            self.signals.failed.emit(self.transfer_id, str(e), traceback.format_exc())
 
     def _do_upload(self) -> None:
-        row = self._db.fetchone(
-            "SELECT * FROM transfers WHERE id = ?", (self.transfer_id,)
-        )
+        row = self._db.fetchone("SELECT * FROM transfers WHERE id = ?", (self.transfer_id,))
         if not row:
-            self.signals.failed.emit(
-                self.transfer_id, "Transfer record not found.", ""
-            )
+            self.signals.failed.emit(self.transfer_id, "Transfer record not found.", "")
             return
 
         from pathlib import Path
@@ -191,9 +183,7 @@ class UploadWorker(QRunnable):
 
                 f.seek(offset)
                 data = f.read(size)
-                etag = self._upload_part_with_retry(
-                    object_key, upload_id, part_num, data
-                )
+                etag = self._upload_part_with_retry(object_key, upload_id, part_num, data)
                 if etag is None:
                     return  # failed signal already emitted
 
@@ -211,17 +201,11 @@ class UploadWorker(QRunnable):
                 )
                 self.signals.progress.emit(self.transfer_id, bytes_done, file_size)
                 self._update_speed(size)
-                parts_for_complete.append(
-                    {"ETag": etag, "PartNumber": part_num}
-                )
+                parts_for_complete.append({"ETag": etag, "PartNumber": part_num})
 
         # Complete
-        all_parts = sorted(
-            self._get_all_completed_parts(), key=lambda p: p["PartNumber"]
-        )
-        self._s3.complete_multipart_upload(
-            self._bucket, object_key, upload_id, all_parts
-        )
+        all_parts = sorted(self._get_all_completed_parts(), key=lambda p: p["PartNumber"])
+        self._s3.complete_multipart_upload(self._bucket, object_key, upload_id, all_parts)
         self._complete(file_size)
 
     def _upload_part_with_retry(
@@ -229,15 +213,16 @@ class UploadWorker(QRunnable):
     ) -> str | None:
         for attempt in range(MAX_RETRY_ATTEMPTS):
             try:
-                return self._s3.upload_part(
-                    self._bucket, key, upload_id, part_num, data
-                )
+                return self._s3.upload_part(self._bucket, key, upload_id, part_num, data)
             except Exception as e:
                 if attempt < MAX_RETRY_ATTEMPTS - 1:
                     delay = _backoff_delay(attempt)
                     logger.warning(
                         "Upload part %d attempt %d failed, retrying in %.1fs: %s",
-                        part_num, attempt + 1, delay, e,
+                        part_num,
+                        attempt + 1,
+                        delay,
+                        e,
                     )
                     time.sleep(delay)
                 else:
@@ -272,16 +257,14 @@ class UploadWorker(QRunnable):
         with contextlib.suppress(Exception):
             self._s3.abort_multipart_upload(self._bucket, key, upload_id)
         self._db.execute(
-            "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') "
-            "WHERE id = ?",
+            "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
             (self.transfer_id,),
         )
         logger.info("Upload %d cancelled", self.transfer_id)
 
     def _do_pause(self) -> None:
         self._db.execute(
-            "UPDATE transfers SET status = 'paused', updated_at = datetime('now') "
-            "WHERE id = ?",
+            "UPDATE transfers SET status = 'paused', updated_at = datetime('now') WHERE id = ?",
             (self.transfer_id,),
         )
         logger.info("Upload %d paused", self.transfer_id)
@@ -309,9 +292,7 @@ class UploadWorker(QRunnable):
         now = time.monotonic()
         self._speed_window.append((now, chunk_bytes))
         # Keep 3-second window
-        self._speed_window = [
-            (t, b) for t, b in self._speed_window if now - t <= 3.0
-        ]
+        self._speed_window = [(t, b) for t, b in self._speed_window if now - t <= 3.0]
         if now - self._last_speed_emit >= 0.5 and self._speed_window:
             window_time = now - self._speed_window[0][0]
             if window_time > 0:

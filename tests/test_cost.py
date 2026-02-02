@@ -33,17 +33,13 @@ def tracker(db: Database, bucket_id: int) -> CostTracker:
 class TestRecordRequest:
     def test_increments_correct_column(self, tracker: CostTracker, db: Database, bucket_id: int):
         tracker.record_request("put", 3)
-        row = db.fetchone(
-            "SELECT put_requests FROM daily_usage WHERE bucket_id = ?", (bucket_id,)
-        )
+        row = db.fetchone("SELECT put_requests FROM daily_usage WHERE bucket_id = ?", (bucket_id,))
         assert row["put_requests"] == 3
 
     def test_accumulates_on_same_day(self, tracker: CostTracker, db: Database, bucket_id: int):
         tracker.record_request("get", 5)
         tracker.record_request("get", 10)
-        row = db.fetchone(
-            "SELECT get_requests FROM daily_usage WHERE bucket_id = ?", (bucket_id,)
-        )
+        row = db.fetchone("SELECT get_requests FROM daily_usage WHERE bucket_id = ?", (bucket_id,))
         assert row["get_requests"] == 15
 
     def test_record_on_new_day(self, tracker: CostTracker, db: Database, bucket_id: int):

@@ -62,21 +62,13 @@ class DownloadWorker(QRunnable):
             try:
                 self._mark_failed(str(e))
             except Exception:
-                logger.exception(
-                    "Failed to mark download %d as failed", self.transfer_id
-                )
-            self.signals.failed.emit(
-                self.transfer_id, str(e), traceback.format_exc()
-            )
+                logger.exception("Failed to mark download %d as failed", self.transfer_id)
+            self.signals.failed.emit(self.transfer_id, str(e), traceback.format_exc())
 
     def _do_download(self) -> None:
-        row = self._db.fetchone(
-            "SELECT * FROM transfers WHERE id = ?", (self.transfer_id,)
-        )
+        row = self._db.fetchone("SELECT * FROM transfers WHERE id = ?", (self.transfer_id,))
         if not row:
-            self.signals.failed.emit(
-                self.transfer_id, "Transfer record not found.", ""
-            )
+            self.signals.failed.emit(self.transfer_id, "Transfer record not found.", "")
             return
 
         local_path = Path(row["local_path"])
@@ -112,22 +104,16 @@ class DownloadWorker(QRunnable):
         if total_size < MULTIPART_THRESHOLD:
             self._single_download(object_key, local_path, temp_path, total_size)
         else:
-            self._ranged_download(
-                object_key, local_path, temp_path, total_size
-            )
+            self._ranged_download(object_key, local_path, temp_path, total_size)
 
-    def _single_download(
-        self, key: str, final_path: Path, temp_path: Path, total: int
-    ) -> None:
+    def _single_download(self, key: str, final_path: Path, temp_path: Path, total: int) -> None:
         body = self._s3.get_object(self._bucket, key)
         data = body.read()
         temp_path.write_bytes(data)
         temp_path.rename(final_path)
         self._complete(total)
 
-    def _ranged_download(
-        self, key: str, final_path: Path, temp_path: Path, total: int
-    ) -> None:
+    def _ranged_download(self, key: str, final_path: Path, temp_path: Path, total: int) -> None:
         chunk_size = DEFAULT_PART_SIZE
 
         # Resume from existing temp file
@@ -187,9 +173,7 @@ class DownloadWorker(QRunnable):
         temp_path.rename(final_path)
         self._complete(total)
 
-    def _download_chunk_with_retry(
-        self, key: str, range_header: str
-    ) -> bytes | None:
+    def _download_chunk_with_retry(self, key: str, range_header: str) -> bytes | None:
         for attempt in range(MAX_RETRY_ATTEMPTS):
             try:
                 body = self._s3.get_object(self._bucket, key, range_header)
@@ -199,7 +183,9 @@ class DownloadWorker(QRunnable):
                     delay = _backoff_delay(attempt)
                     logger.warning(
                         "Download chunk attempt %d failed, retrying in %.1fs: %s",
-                        attempt + 1, delay, e,
+                        attempt + 1,
+                        delay,
+                        e,
                     )
                     time.sleep(delay)
                 else:
@@ -239,8 +225,7 @@ class DownloadWorker(QRunnable):
                     temp_path,
                 )
         self._db.execute(
-            "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') "
-            "WHERE id = ?",
+            "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
             (self.transfer_id,),
         )
         logger.info("Download %d cancelled", self.transfer_id)
@@ -256,9 +241,7 @@ class DownloadWorker(QRunnable):
     def _update_speed(self, chunk_bytes: int) -> None:
         now = time.monotonic()
         self._speed_window.append((now, chunk_bytes))
-        self._speed_window = [
-            (t, b) for t, b in self._speed_window if now - t <= 3.0
-        ]
+        self._speed_window = [(t, b) for t, b in self._speed_window if now - t <= 3.0]
         if now - self._last_speed_emit >= 0.5 and self._speed_window:
             window_time = now - self._speed_window[0][0]
             if window_time > 0:

@@ -12,9 +12,7 @@ def setup_logging() -> None:
         maxBytes=MAX_LOG_SIZE,
         backupCount=LOG_BACKUP_COUNT,
     )
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s [%(name)s] %(message)s"))
     root = logging.getLogger("s3ui")
     root.setLevel(logging.DEBUG)
     root.addHandler(handler)

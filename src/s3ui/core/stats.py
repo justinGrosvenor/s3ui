@@ -90,8 +90,7 @@ class StatsCollector(QThread):
                 self.signals.progress.emit(snapshot.total_count)
 
             snapshot.top_largest = [
-                {"key": key, "size": size}
-                for size, key in sorted(top_heap, reverse=True)
+                {"key": key, "size": size} for size, key in sorted(top_heap, reverse=True)
             ]
 
             # Save to database
@@ -107,18 +106,22 @@ class StatsCollector(QThread):
                         self._bucket,
                         snapshot.total_count,
                         snapshot.total_bytes,
-                        json.dumps({
-                            "bytes_by_class": snapshot.bytes_by_class,
-                            "count_by_class": snapshot.count_by_class,
-                            "top_largest": snapshot.top_largest,
-                        }),
+                        json.dumps(
+                            {
+                                "bytes_by_class": snapshot.bytes_by_class,
+                                "count_by_class": snapshot.count_by_class,
+                                "top_largest": snapshot.top_largest,
+                            }
+                        ),
                     ),
                 )
 
             self.signals.complete.emit(snapshot)
             logger.info(
                 "Scan complete for '%s': %d objects, %d bytes",
-                self._bucket, snapshot.total_count, snapshot.total_bytes,
+                self._bucket,
+                snapshot.total_count,
+                snapshot.total_bytes,
             )
         except Exception as e:
             logger.error("Scan failed for '%s': %s", self._bucket, e)

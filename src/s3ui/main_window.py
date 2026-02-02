@@ -70,9 +70,7 @@ class _DeleteSignals(QObject):
 class _DeleteWorker(QThread):
     """Background thread for deleting S3 objects."""
 
-    def __init__(
-        self, s3_client: S3Client, bucket: str, keys: list[str], parent=None
-    ) -> None:
+    def __init__(self, s3_client: S3Client, bucket: str, keys: list[str], parent=None) -> None:
         super().__init__(parent)
         self.signals = _DeleteSignals()
         self._s3 = s3_client
@@ -425,9 +423,7 @@ class MainWindow(QMainWindow):
         if count:
             self.set_status(f"Uploading {count} file(s)...")
 
-    def _create_upload_transfer(
-        self, bucket_id: int, key: str, local_path
-    ) -> None:
+    def _create_upload_transfer(self, bucket_id: int, key: str, local_path) -> None:
         """Insert a single upload transfer record and enqueue it."""
         size = local_path.stat().st_size
         tid = self._db.execute(
@@ -509,12 +505,8 @@ class MainWindow(QMainWindow):
         self.set_status(f"Deleting {len(keys)} object(s)...")
 
         worker = _DeleteWorker(self._s3_client, bucket, keys, self)
-        worker.signals.finished.connect(
-            lambda deleted_keys: self._on_delete_finished(deleted_keys)
-        )
-        worker.signals.failed.connect(
-            lambda msg: self.set_status(f"Delete failed: {msg}")
-        )
+        worker.signals.finished.connect(lambda deleted_keys: self._on_delete_finished(deleted_keys))
+        worker.signals.failed.connect(lambda msg: self.set_status(f"Delete failed: {msg}"))
         worker.finished.connect(worker.deleteLater)
         self._delete_worker = worker
         worker.start()
@@ -562,9 +554,7 @@ class MainWindow(QMainWindow):
     def _setup_transfer_dock(self) -> None:
         self._transfer_dock = QDockWidget("Transfers", self)
         self._transfer_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
-        self._transfer_dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetClosable
-        )
+        self._transfer_dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
         self._transfer_panel = TransferPanelWidget(db=self._db)
         self._transfer_panel.setMinimumHeight(80)
         self._transfer_dock.setWidget(self._transfer_panel)
@@ -579,9 +569,7 @@ class MainWindow(QMainWindow):
     def _setup_tray_icon(self) -> None:
         if QSystemTrayIcon.isSystemTrayAvailable():
             self._tray_icon = QSystemTrayIcon(self)
-            self._tray_icon.setIcon(
-                QIcon.fromTheme("folder-cloud", self.windowIcon())
-            )
+            self._tray_icon.setIcon(QIcon.fromTheme("folder-cloud", self.windowIcon()))
             self._tray_icon.setToolTip("S3UI")
             # Don't show in tray by default — just use it for notifications
         else:
@@ -649,9 +637,7 @@ class MainWindow(QMainWindow):
         local_path = TEMP_DIR / filename
 
         try:
-            body = self._s3_pane._s3_client.get_object(
-                self._s3_pane._bucket, item.key
-            )
+            body = self._s3_pane._s3_client.get_object(self._s3_pane._bucket, item.key)
             data = body.read()
             local_path.write_bytes(data)
             self._temp_files.append(str(local_path))
@@ -739,7 +725,8 @@ class MainWindow(QMainWindow):
         set_pref(self._db, "window_state", self.saveState().toBase64().data().decode())
         set_pref(self._db, "splitter_state", self._splitter.saveState().toBase64().data().decode())
         set_pref(
-            self._db, "transfer_dock_visible",
+            self._db,
+            "transfer_dock_visible",
             "true" if self._transfer_dock.isVisible() else "false",
         )
         set_pref(self._db, "local_pane_path", self._local_pane.current_path())

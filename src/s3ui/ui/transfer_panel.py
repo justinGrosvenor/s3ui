@@ -72,9 +72,7 @@ class TransferPanelWidget(QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.horizontalHeader().setSectionResizeMode(
-            1, QHeaderView.ResizeMode.Stretch
-        )
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         # Direction column narrow
         self._table.setColumnWidth(0, 30)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -131,9 +129,7 @@ class TransferPanelWidget(QWidget):
         if not index.isValid():
             return
 
-        row_data = self._model.get_transfer_row(
-            self._model._rows[index.row()].transfer_id
-        )
+        row_data = self._model.get_transfer_row(self._model._rows[index.row()].transfer_id)
         if not row_data:
             return
 

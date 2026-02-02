@@ -166,9 +166,7 @@ class S3PaneWidget(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setSortingEnabled(True)
         self._table.horizontalHeader().setStretchLastSection(True)
-        self._table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
-        )
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self._table.doubleClicked.connect(self._on_double_click)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_context_menu)
@@ -289,7 +287,7 @@ class S3PaneWidget(QWidget):
     def notify_upload_complete(self, key: str, size: int) -> None:
         """Optimistic: insert uploaded object into current listing."""
         prefix = self._current_prefix
-        name = key[len(prefix):] if prefix else key
+        name = key[len(prefix) :] if prefix else key
         if "/" in name:
             return  # Not in current directory level
         item = S3Item(name=name, key=key, is_prefix=False, size=size)
@@ -341,9 +339,7 @@ class S3PaneWidget(QWidget):
 
     # --- Internal ---
 
-    def _launch_fetch(
-        self, prefix: str, revalidate: bool = False, counter: int = 0
-    ) -> None:
+    def _launch_fetch(self, prefix: str, revalidate: bool = False, counter: int = 0) -> None:
         """Launch a background fetch for the given prefix."""
         self._fetch_id += 1
         fetch_id = self._fetch_id
@@ -409,7 +405,7 @@ class S3PaneWidget(QWidget):
     def _on_breadcrumb_clicked(self, path: str) -> None:
         # Strip bucket name from the front to get the prefix
         if self._bucket and path.startswith(self._bucket):
-            prefix = path[len(self._bucket):]
+            prefix = path[len(self._bucket) :]
             if prefix.startswith("/"):
                 prefix = prefix[1:]
             if prefix and not prefix.endswith("/"):
@@ -422,7 +418,7 @@ class S3PaneWidget(QWidget):
     def _on_breadcrumb_edited(self, path: str) -> None:
         # User typed a path — interpret as prefix
         if self._bucket and path.startswith(self._bucket):
-            prefix = path[len(self._bucket):]
+            prefix = path[len(self._bucket) :]
             if prefix.startswith("/"):
                 prefix = prefix[1:]
         else:
@@ -477,9 +473,7 @@ class S3PaneWidget(QWidget):
             if len(selected) == 1:
                 menu.addSeparator()
                 info_action = menu.addAction("Get Info")
-                info_action.triggered.connect(
-                    lambda: self.get_info_requested.emit(selected[0])
-                )
+                info_action.triggered.connect(lambda: self.get_info_requested.emit(selected[0]))
         else:
             new_folder_action = menu.addAction("New Folder")
             new_folder_action.triggered.connect(self.new_folder_requested.emit)
@@ -498,7 +492,9 @@ class S3PaneWidget(QWidget):
                 if key.startswith(locked_key) or locked_key.startswith(key):
                     logger.warning(
                         "Lock conflict: '%s' blocked by '%s' (%s)",
-                        key, locked_key, locked_desc,
+                        key,
+                        locked_key,
+                        locked_desc,
                     )
                     return False
         for key in keys:
@@ -518,29 +514,25 @@ class S3PaneWidget(QWidget):
 
         etype = event.type()
 
-        if etype in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
-            if event.mimeData().hasUrls():
-                event.setDropAction(Qt.DropAction.CopyAction)
-                event.accept()
-                return True
+        if etype in (QEvent.Type.DragEnter, QEvent.Type.DragMove) and event.mimeData().hasUrls():
+            event.setDropAction(Qt.DropAction.CopyAction)
+            event.accept()
+            return True
 
-        if etype == QEvent.Type.Drop:
-            if event.mimeData().hasUrls():
-                paths = []
-                for url in event.mimeData().urls():
-                    if url.isLocalFile():
-                        paths.append(url.toLocalFile())
-                if paths:
-                    self.files_dropped.emit(paths)
-                event.accept()
-                return True
+        if etype == QEvent.Type.Drop and event.mimeData().hasUrls():
+            paths = []
+            for url in event.mimeData().urls():
+                if url.isLocalFile():
+                    paths.append(url.toLocalFile())
+            if paths:
+                self.files_dropped.emit(paths)
+            event.accept()
+            return True
 
         return super().eventFilter(obj, event)
 
     @staticmethod
-    def _rename_in_list(
-        items: list[S3Item], old_key: str, new_key: str, new_name: str
-    ) -> None:
+    def _rename_in_list(items: list[S3Item], old_key: str, new_key: str, new_name: str) -> None:
         for item in items:
             if item.key == old_key:
                 item.key = new_key

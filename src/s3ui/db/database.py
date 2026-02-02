@@ -97,9 +97,7 @@ class Database:
 
     def _get_schema_version(self) -> int:
         """Get the current schema version."""
-        row = self._get_conn().execute(
-            "SELECT MAX(version) as v FROM schema_version"
-        ).fetchone()
+        row = self._get_conn().execute("SELECT MAX(version) as v FROM schema_version").fetchone()
         return row["v"] if row and row["v"] is not None else 0
 
     def close(self) -> None:
@@ -110,6 +108,7 @@ class Database:
 
 
 # Preferences helpers
+
 
 def get_pref(db: Database, key: str, default: str | None = None) -> str | None:
     """Get a preference value by key."""

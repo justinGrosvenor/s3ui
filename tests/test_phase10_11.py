@@ -4,7 +4,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from PyQt6.QtWidgets import QMessageBox
 
 from s3ui.core.credentials import CredentialStore, Profile
@@ -227,17 +226,13 @@ class TestConnectionFlow:
     def mock_discover(self, monkeypatch):
         """Mock discover_aws_profiles to return a known list."""
         profiles = ["default", "work"]
-        monkeypatch.setattr(
-            "s3ui.main_window.discover_aws_profiles", lambda: profiles
-        )
+        monkeypatch.setattr("s3ui.main_window.discover_aws_profiles", lambda: profiles)
         return profiles
 
     @pytest.fixture
     def mock_discover_empty(self, monkeypatch):
         """Mock discover_aws_profiles to return nothing."""
-        monkeypatch.setattr(
-            "s3ui.main_window.discover_aws_profiles", lambda: []
-        )
+        monkeypatch.setattr("s3ui.main_window.discover_aws_profiles", lambda: [])
 
     def test_populate_profiles_aws(self, qtbot, db, mock_keyring, mock_discover):
         window = MainWindow(db=db)
@@ -255,9 +250,14 @@ class TestConnectionFlow:
     def test_populate_profiles_mixed(self, qtbot, db, mock_keyring, mock_discover):
         # Save a custom profile
         store = CredentialStore()
-        store.save_profile(Profile(
-            name="custom", access_key_id="AKIA1", secret_access_key="secret1", region="us-east-1"
-        ))
+        store.save_profile(
+            Profile(
+                name="custom",
+                access_key_id="AKIA1",
+                secret_access_key="secret1",
+                region="us-east-1",
+            )
+        )
 
         window = MainWindow(db=db)
         qtbot.addWidget(window)
@@ -270,9 +270,14 @@ class TestConnectionFlow:
     def test_populate_profiles_no_duplicates(self, qtbot, db, mock_keyring, mock_discover):
         # Save a profile with the same name as an AWS profile
         store = CredentialStore()
-        store.save_profile(Profile(
-            name="default", access_key_id="AKIA1", secret_access_key="secret1", region="us-east-1"
-        ))
+        store.save_profile(
+            Profile(
+                name="default",
+                access_key_id="AKIA1",
+                secret_access_key="secret1",
+                region="us-east-1",
+            )
+        )
 
         window = MainWindow(db=db)
         qtbot.addWidget(window)
@@ -284,7 +289,12 @@ class TestConnectionFlow:
     def test_connect_worker_success(self, qtbot):
         mock_client = MagicMock()
         mock_client.list_buckets.return_value = ["bucket-a", "bucket-b"]
-        profile = Profile(name="test", access_key_id="AKIA", secret_access_key="secret", region="us-east-1")
+        profile = Profile(
+            name="test",
+            access_key_id="AKIA",
+            secret_access_key="secret",
+            region="us-east-1",
+        )
 
         with patch("s3ui.main_window.S3Client", return_value=mock_client):
             worker = _ConnectWorker(profile)
@@ -297,7 +307,12 @@ class TestConnectionFlow:
     def test_connect_worker_failure(self, qtbot):
         from s3ui.core.s3_client import S3ClientError
 
-        profile = Profile(name="test", access_key_id="AKIA", secret_access_key="bad", region="us-east-1")
+        profile = Profile(
+            name="test",
+            access_key_id="AKIA",
+            secret_access_key="bad",
+            region="us-east-1",
+        )
 
         with patch("s3ui.main_window.S3Client", side_effect=S3ClientError("Bad key", "detail")):
             worker = _ConnectWorker(profile)
@@ -388,9 +403,7 @@ class TestConnectionFlow:
             window._init_connection()
             mock_wizard.assert_called_once()
 
-    def test_init_connection_restores_last_profile(
-        self, qtbot, db, mock_keyring, mock_discover
-    ):
+    def test_init_connection_restores_last_profile(self, qtbot, db, mock_keyring, mock_discover):
         set_pref(db, "last_profile", "work")
 
         window = MainWindow(db=db)
@@ -411,9 +424,7 @@ class TestConnectionFlow:
         with patch("s3ui.main_window.SettingsDialog") as MockDialog:
             MockDialog.return_value.exec.return_value = 0
             window._open_settings()
-            MockDialog.assert_called_once_with(
-                store=window._store, db=db, parent=window
-            )
+            MockDialog.assert_called_once_with(store=window._store, db=db, parent=window)
 
 
 class TestUploadDownloadWiring:
@@ -465,9 +476,7 @@ class TestUploadDownloadWiring:
         items = [S3Item(name="test.txt", key="test.txt", is_prefix=False, size=100)]
         connected_window._s3_pane.download_requested.emit(items)
 
-        rows = connected_window._db.fetchall(
-            "SELECT * FROM transfers WHERE direction = 'download'"
-        )
+        rows = connected_window._db.fetchall("SELECT * FROM transfers WHERE direction = 'download'")
         assert len(rows) == 1
 
     def test_transfer_engine_created_on_bucket_select(self, connected_window):
@@ -513,9 +522,7 @@ class TestUploadDownloadWiring:
         f.write_text("data")
         connected_window._enqueue_uploads([str(f)])
 
-        row = db.fetchone(
-            "SELECT object_key FROM transfers WHERE direction = 'upload'"
-        )
+        row = db.fetchone("SELECT object_key FROM transfers WHERE direction = 'upload'")
         assert row["object_key"] == "docs/readme.txt"
 
     def test_enqueue_uploads_directory(self, connected_window, tmp_path):
@@ -607,7 +614,8 @@ class TestUploadDownloadWiring:
             S3Item(name="old.txt", key="old.txt", is_prefix=False, size=100),
         ]
 
-        with patch("s3ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+        ret_yes = QMessageBox.StandardButton.Yes
+        with patch("s3ui.main_window.QMessageBox.question", return_value=ret_yes):
             connected_window._on_delete_requested(items)
 
         # Worker runs in background — wait for it
@@ -622,7 +630,8 @@ class TestUploadDownloadWiring:
 
         items = [S3Item(name="keep.txt", key="keep.txt", is_prefix=False, size=100)]
 
-        with patch("s3ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+        ret_no = QMessageBox.StandardButton.No
+        with patch("s3ui.main_window.QMessageBox.question", return_value=ret_no):
             connected_window._on_delete_requested(items)
 
         connected_window._s3_client.delete_objects.assert_not_called()

@@ -92,21 +92,21 @@ class CredentialStore:
 
     def save_profile(self, profile: Profile) -> None:
         """Save a profile to the keyring and update the index."""
-        data = json.dumps({
-            "access_key_id": profile.access_key_id,
-            "secret_access_key": profile.secret_access_key,
-            "region": profile.region,
-            "is_aws_profile": profile.is_aws_profile,
-        })
+        data = json.dumps(
+            {
+                "access_key_id": profile.access_key_id,
+                "secret_access_key": profile.secret_access_key,
+                "region": profile.region,
+                "is_aws_profile": profile.is_aws_profile,
+            }
+        )
         keyring.set_password(KEYRING_SERVICE, f"profile:{profile.name}", data)
 
         # Update profile index
         profiles = self.list_profiles()
         if profile.name not in profiles:
             profiles.append(profile.name)
-            keyring.set_password(
-                KEYRING_SERVICE, PROFILES_INDEX_KEY, json.dumps(profiles)
-            )
+            keyring.set_password(KEYRING_SERVICE, PROFILES_INDEX_KEY, json.dumps(profiles))
         logger.info("Saved profile '%s' (aws_profile=%s)", profile.name, profile.is_aws_profile)
 
     def delete_profile(self, name: str) -> None:
@@ -116,9 +116,7 @@ class CredentialStore:
         profiles = self.list_profiles()
         if name in profiles:
             profiles.remove(name)
-            keyring.set_password(
-                KEYRING_SERVICE, PROFILES_INDEX_KEY, json.dumps(profiles)
-            )
+            keyring.set_password(KEYRING_SERVICE, PROFILES_INDEX_KEY, json.dumps(profiles))
         logger.info("Deleted profile '%s'", name)
 
     def test_connection(self, profile: Profile) -> TestResult:
@@ -152,9 +150,7 @@ class CredentialStore:
             return TestResult(success=True, buckets=bucket_names)
         except Exception as e:
             user_msg, detail = translate_error(e)
-            logger.warning(
-                "Connection test failed for profile '%s': %s", profile.name, detail
-            )
+            logger.warning("Connection test failed for profile '%s': %s", profile.name, detail)
             return TestResult(
                 success=False,
                 buckets=[],

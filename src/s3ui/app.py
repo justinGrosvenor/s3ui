@@ -16,10 +16,17 @@ def main() -> None:
     logger.info("Starting %s", APP_NAME)
 
     from PyQt6.QtCore import QLockFile
+    from PyQt6.QtGui import QIcon
     from PyQt6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
+
+    # Set application icon (window, dock, tray)
+    from importlib.resources import files
+
+    icon_path = str(files("s3ui.resources").joinpath("s3ui.png"))
+    app.setWindowIcon(QIcon(icon_path))
 
     # Single-instance check
     lock_file = QLockFile(str(APP_DIR / "s3ui.lock"))

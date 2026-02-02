@@ -635,3 +635,81 @@ class TestUploadDownloadWiring:
             connected_window._on_delete_requested(items)
 
         connected_window._s3_client.delete_objects.assert_not_called()
+
+    def test_delete_folder(self, connected_window):
+        """Folders (prefixes) can be deleted."""
+        from s3ui.models.s3_objects import S3Item
+
+        mock_client = connected_window._s3_client
+        mock_client.delete_objects.return_value = []
+
+        items = [S3Item(name="my-folder", key="my-folder/", is_prefix=True)]
+
+        ret_yes = QMessageBox.StandardButton.Yes
+        with patch("s3ui.main_window.QMessageBox.question", return_value=ret_yes):
+            connected_window._on_delete_requested(items)
+
+        if connected_window._delete_worker:
+            connected_window._delete_worker.wait(3000)
+
+        mock_client.delete_objects.assert_called_once_with("test-bucket", ["my-folder/"])
+
+    def test_new_folder_creates_object(self, connected_window):
+        """New folder creates an empty S3 object with trailing slash."""
+        mock_client = connected_window._s3_client
+
+        with patch(
+            "s3ui.main_window.QInputDialog.getText",
+            return_value=("my-folder", True),
+        ):
+            connected_window._on_new_folder_requested()
+
+        mock_client.put_object.assert_called_once_with("test-bucket", "my-folder/", b"")
+
+    def test_new_folder_cancelled(self, connected_window):
+        """New folder does nothing when user cancels the dialog."""
+        mock_client = connected_window._s3_client
+
+        with patch(
+            "s3ui.main_window.QInputDialog.getText",
+            return_value=("", False),
+        ):
+            connected_window._on_new_folder_requested()
+
+        mock_client.put_object.assert_not_called()
+
+    def test_new_folder_with_prefix(self, connected_window):
+        """New folder uses the current S3 prefix."""
+        mock_client = connected_window._s3_client
+        connected_window._s3_pane._current_prefix = "docs/"
+
+        with patch(
+            "s3ui.main_window.QInputDialog.getText",
+            return_value=("sub", True),
+        ):
+            connected_window._on_new_folder_requested()
+
+        mock_client.put_object.assert_called_once_with("test-bucket", "docs/sub/", b"")
+
+    def test_new_folder_button_exists(self, connected_window):
+        """S3 pane toolbar has a New Folder button."""
+        btn = connected_window._s3_pane._new_folder_btn
+        assert btn.toolTip() == "New Folder"
+
+    def test_cost_tracker_created_on_bucket_select(self, connected_window):
+        """CostTracker is created when a bucket is selected."""
+        assert connected_window._cost_tracker is not None
+
+    def test_cost_label_updated(self, connected_window):
+        """Status bar cost label shows an estimate after bucket selection."""
+        assert "$" in connected_window._cost_label.text()
+
+    def test_cost_action_enabled(self, connected_window):
+        """Cost Dashboard menu action is enabled after bucket selection."""
+        assert connected_window._cost_action.isEnabled()
+
+    def test_s3_client_receives_cost_tracker(self, connected_window):
+        """S3Client.set_cost_tracker is called after bucket selection."""
+        connected_window._s3_client.set_cost_tracker.assert_called_once_with(
+            connected_window._cost_tracker
+        )

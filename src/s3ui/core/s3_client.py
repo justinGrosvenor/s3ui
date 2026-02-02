@@ -60,6 +60,10 @@ class S3Client:
             profile.is_aws_profile,
         )
 
+    def set_cost_tracker(self, tracker: CostTracker | None) -> None:
+        """Attach or replace the cost tracker (e.g. after bucket selection)."""
+        self._cost = tracker
+
     def _record(self, request_type: str, count: int = 1) -> None:
         if self._cost:
             self._cost.record_request(request_type, count)

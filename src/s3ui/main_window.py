@@ -4,10 +4,11 @@ import logging
 import sys
 
 from PyQt6.QtCore import QByteArray, QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon, QKeySequence
+from PyQt6.QtGui import QAction, QDesktopServices, QKeySequence
 from PyQt6.QtWidgets import (
     QComboBox,
     QDockWidget,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -26,6 +27,7 @@ from s3ui.constants import (
     QUICK_OPEN_THRESHOLD,
     TEMP_DIR,
 )
+from s3ui.core.cost import CostTracker
 from s3ui.core.credentials import CredentialStore, Profile, discover_aws_profiles
 from s3ui.core.s3_client import S3Client, S3ClientError
 from s3ui.core.transfers import TransferEngine
@@ -98,6 +100,7 @@ class MainWindow(QMainWindow):
         self._connect_worker: _ConnectWorker | None = None
         self._wizard: SetupWizard | None = None
         self._delete_worker: _DeleteWorker | None = None
+        self._cost_tracker: CostTracker | None = None
         self._aws_profile_names: set[str] = set()
 
         self.setWindowTitle("S3UI")
@@ -124,6 +127,7 @@ class MainWindow(QMainWindow):
         self._s3_pane.files_dropped.connect(self._on_files_dropped)
         self._s3_pane.download_requested.connect(self._on_download_requested)
         self._s3_pane.delete_requested.connect(self._on_delete_requested)
+        self._s3_pane.new_folder_requested.connect(self._on_new_folder_requested)
 
         # Wire transfer panel control signals
         self._transfer_panel.pause_requested.connect(self._on_pause_transfer)
@@ -247,8 +251,15 @@ class MainWindow(QMainWindow):
         self._connect_worker = _ConnectWorker(profile, self)
         self._connect_worker.signals.connected.connect(self._on_connected)
         self._connect_worker.signals.failed.connect(self._on_connect_failed)
-        self._connect_worker.finished.connect(self._connect_worker.deleteLater)
+        self._connect_worker.finished.connect(self._on_connect_worker_done)
         self._connect_worker.start()
+
+    def _on_connect_worker_done(self) -> None:
+        """Clean up the connect worker after it finishes."""
+        worker = self._connect_worker
+        self._connect_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _on_connected(self, client: S3Client, buckets: list[str]) -> None:
         """Handle successful connection — populate bucket combo."""
@@ -307,6 +318,7 @@ class MainWindow(QMainWindow):
 
             set_pref(self._db, "last_bucket", bucket_name)
 
+        self._create_cost_tracker()
         self._create_transfer_engine()
 
     def _show_setup_wizard(self) -> None:
@@ -347,6 +359,37 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self._profile_combo.setCurrentIndex(idx)
             self._on_profile_selected(idx)
+
+    # --- Cost tracking ---
+
+    def _create_cost_tracker(self) -> None:
+        """Create a CostTracker for the current bucket and attach to S3Client."""
+        bucket_id = self._ensure_bucket_id()
+        if bucket_id is None or not self._db:
+            self._cost_tracker = None
+            return
+
+        self._cost_tracker = CostTracker(self._db, bucket_id)
+        if self._s3_client:
+            self._s3_client.set_cost_tracker(self._cost_tracker)
+        self._cost_action.setEnabled(True)
+        self._update_cost_label()
+
+    def _update_cost_label(self) -> None:
+        """Refresh the status bar cost estimate."""
+        if not self._cost_tracker:
+            self._cost_label.setText("")
+            return
+        estimate = self._cost_tracker.get_monthly_estimate()
+        self._cost_label.setText(f"Est. ${estimate:.4f}/mo")
+
+    def _open_cost_dashboard(self) -> None:
+        """Open the cost dashboard dialog."""
+        from s3ui.ui.cost_dialog import CostDialog
+
+        dialog = CostDialog(cost_tracker=self._cost_tracker, parent=self)
+        dialog.exec()
+        self._update_cost_label()
 
     # --- Upload / Download / Transfer wiring ---
 
@@ -483,38 +526,70 @@ class MainWindow(QMainWindow):
         if not bucket:
             return
 
-        files = [i for i in items if not i.is_prefix]
-        if not files:
+        if not items:
             return
 
-        names = [f.name for f in files[:5]]
-        if len(files) > 5:
-            names.append(f"... and {len(files) - 5} more")
+        names = [i.name for i in items[:5]]
+        if len(items) > 5:
+            names.append(f"... and {len(items) - 5} more")
         listing = "\n".join(names)
 
         reply = QMessageBox.question(
             self,
             "Delete Objects",
-            f"Delete {len(files)} object(s)?\n\n{listing}",
+            f"Delete {len(items)} item(s)?\n\n{listing}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        keys = [f.key for f in files]
-        self.set_status(f"Deleting {len(keys)} object(s)...")
+        keys = [i.key for i in items]
+        self.set_status(f"Deleting {len(keys)} item(s)...")
 
         worker = _DeleteWorker(self._s3_client, bucket, keys, self)
-        worker.signals.finished.connect(lambda deleted_keys: self._on_delete_finished(deleted_keys))
+        worker.signals.finished.connect(self._on_delete_finished)
         worker.signals.failed.connect(lambda msg: self.set_status(f"Delete failed: {msg}"))
-        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(self._on_delete_worker_done)
         self._delete_worker = worker
         worker.start()
+
+    def _on_delete_worker_done(self) -> None:
+        """Clean up the delete worker after it finishes."""
+        worker = self._delete_worker
+        self._delete_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _on_delete_finished(self, deleted_keys: list[str]) -> None:
         """Handle completed deletion — update S3 pane and status."""
         self._s3_pane.notify_delete_complete(deleted_keys)
         self.set_status(f"Deleted {len(deleted_keys)} object(s)")
+
+    def _on_new_folder_requested(self) -> None:
+        """Prompt for folder name and create it as an empty S3 object."""
+        if not self._s3_client:
+            self.set_status("Not connected — cannot create folder")
+            return
+
+        bucket = self._bucket_combo.currentData()
+        if not bucket:
+            return
+
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
+        if not ok or not name.strip():
+            return
+
+        name = name.strip().rstrip("/")
+        prefix = self._s3_pane.current_prefix()
+        key = f"{prefix}{name}/"
+
+        try:
+            self._s3_client.put_object(bucket, key, b"")
+            self._s3_pane.notify_new_folder(key, name)
+            self.set_status(f"Created folder '{name}'")
+        except Exception as e:
+            logger.warning("Failed to create folder '%s': %s", key, e)
+            self.set_status(f"Failed to create folder: {e}")
 
     def _on_pause_transfer(self, tid: int) -> None:
         if self._transfer_engine:
@@ -569,7 +644,7 @@ class MainWindow(QMainWindow):
     def _setup_tray_icon(self) -> None:
         if QSystemTrayIcon.isSystemTrayAvailable():
             self._tray_icon = QSystemTrayIcon(self)
-            self._tray_icon.setIcon(QIcon.fromTheme("folder-cloud", self.windowIcon()))
+            self._tray_icon.setIcon(self.windowIcon())
             self._tray_icon.setToolTip("S3UI")
             # Don't show in tray by default — just use it for notifications
         else:
@@ -608,6 +683,9 @@ class MainWindow(QMainWindow):
             key = row["object_key"]
             size = row["total_bytes"] or 0
             self._s3_pane.notify_upload_complete(key, size)
+
+        # Refresh cost estimate after transfer
+        self._update_cost_label()
 
         # Notification for large transfers when app is in background
         total = row["total_bytes"] or 0
@@ -881,6 +959,7 @@ class MainWindow(QMainWindow):
 
         self._cost_action = QAction("&Cost Dashboard...", self)
         self._cost_action.setEnabled(False)
+        self._cost_action.triggered.connect(self._open_cost_dashboard)
         bucket_menu.addAction(self._cost_action)
 
         # Help menu

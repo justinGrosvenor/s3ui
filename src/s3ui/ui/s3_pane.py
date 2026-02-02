@@ -125,6 +125,13 @@ class S3PaneWidget(QWidget):
         self._forward_btn.setEnabled(False)
         toolbar.addWidget(self._forward_btn)
 
+        self._new_folder_btn = QToolButton()
+        self._new_folder_btn.setText("+")
+        self._new_folder_btn.setToolTip("New Folder")
+        self._new_folder_btn.setAutoRaise(True)
+        self._new_folder_btn.clicked.connect(self.new_folder_requested.emit)
+        toolbar.addWidget(self._new_folder_btn)
+
         self._search_btn = QToolButton()
         self._search_btn.setText("🔍")
         self._search_btn.setToolTip("Filter (Ctrl+F)")

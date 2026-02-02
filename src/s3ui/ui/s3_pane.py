@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import (
+    QEvent,
     QModelIndex,
     QObject,
     QSortFilterProxyModel,
@@ -171,9 +172,12 @@ class S3PaneWidget(QWidget):
         self._table.doubleClicked.connect(self._on_double_click)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_context_menu)
+
+        # Accept drops on the viewport; handled via event filter
         self._table.setAcceptDrops(True)
-        self._table.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
         self._table.viewport().setAcceptDrops(True)
+        self._table.viewport().installEventFilter(self)
+
         layout.addWidget(self._table, 1)
 
         # Status/error label (hidden by default)
@@ -506,31 +510,32 @@ class S3PaneWidget(QWidget):
         for key in keys:
             self._operation_locks.pop(key, None)
 
-    # --- Drag and drop ---
+    # --- Drag and drop (via event filter on table viewport) ---
 
-    def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:
+        if obj is not self._table.viewport():
+            return super().eventFilter(obj, event)
 
-    def dragMoveEvent(self, event) -> None:
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
+        etype = event.type()
 
-    def dropEvent(self, event) -> None:
-        if event.mimeData().hasUrls():
-            paths = []
-            for url in event.mimeData().urls():
-                if url.isLocalFile():
-                    paths.append(url.toLocalFile())
-            if paths:
-                self.files_dropped.emit(paths)
-                event.acceptProposedAction()
-                return
-        super().dropEvent(event)
+        if etype in (QEvent.Type.DragEnter, QEvent.Type.DragMove):
+            if event.mimeData().hasUrls():
+                event.setDropAction(Qt.DropAction.CopyAction)
+                event.accept()
+                return True
+
+        if etype == QEvent.Type.Drop:
+            if event.mimeData().hasUrls():
+                paths = []
+                for url in event.mimeData().urls():
+                    if url.isLocalFile():
+                        paths.append(url.toLocalFile())
+                if paths:
+                    self.files_dropped.emit(paths)
+                event.accept()
+                return True
+
+        return super().eventFilter(obj, event)
 
     @staticmethod
     def _rename_in_list(

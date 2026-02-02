@@ -25,7 +25,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from s3ui.core.credentials import CredentialStore, Profile
+from s3ui.core.credentials import CredentialStore, Profile, discover_aws_profiles
+from s3ui.db.database import get_bool_pref, get_int_pref, get_pref, set_pref
 from s3ui.ui.setup_wizard import AWS_REGIONS
 
 if TYPE_CHECKING:
@@ -74,6 +75,11 @@ class CredentialsTab(QWidget):
 
     def _refresh_list(self) -> None:
         self._profile_list.clear()
+        # Show AWS CLI profiles first
+        aws_profiles = discover_aws_profiles()
+        for name in aws_profiles:
+            self._profile_list.addItem(f"{name} (AWS CLI)")
+        # Then custom profiles from keyring
         for name in self._store.list_profiles():
             self._profile_list.addItem(name)
 
@@ -212,17 +218,17 @@ class TransfersTab(QWidget):
         layout.addRow("Completed transfer retention:", self._retention_combo)
 
         if db:
-            val = db.get_int_pref("max_concurrent_transfers", 4)
+            val = get_int_pref(db, "max_concurrent_transfers", 4)
             self._max_concurrent.setValue(val)
-            ret = db.get_pref("transfer_retention", "Clear after session")
+            ret = get_pref(db, "transfer_retention", "Clear after session")
             idx = self._retention_combo.findText(ret)
             if idx >= 0:
                 self._retention_combo.setCurrentIndex(idx)
 
     def apply_settings(self) -> None:
         if self._db:
-            self._db.set_pref("max_concurrent_transfers", str(self._max_concurrent.value()))
-            self._db.set_pref("transfer_retention", self._retention_combo.currentText())
+            set_pref(self._db, "max_concurrent_transfers", str(self._max_concurrent.value()))
+            set_pref(self._db, "transfer_retention", self._retention_combo.currentText())
 
 
 class GeneralTab(QWidget):
@@ -250,8 +256,8 @@ class GeneralTab(QWidget):
         if db:
             from pathlib import Path
 
-            self._dir_edit.setText(db.get_pref("default_local_dir", str(Path.home())))
-            self._show_hidden.setChecked(db.get_bool_pref("show_hidden_files", False))
+            self._dir_edit.setText(get_pref(db, "default_local_dir", str(Path.home())))
+            self._show_hidden.setChecked(get_bool_pref(db, "show_hidden_files", False))
 
     def _browse_directory(self) -> None:
         path = QFileDialog.getExistingDirectory(
@@ -262,8 +268,8 @@ class GeneralTab(QWidget):
 
     def apply_settings(self) -> None:
         if self._db:
-            self._db.set_pref("default_local_dir", self._dir_edit.text())
-            self._db.set_pref("show_hidden_files", str(self._show_hidden.isChecked()))
+            set_pref(self._db, "default_local_dir", self._dir_edit.text())
+            set_pref(self._db, "show_hidden_files", str(self._show_hidden.isChecked()))
 
 
 class SettingsDialog(QDialog):

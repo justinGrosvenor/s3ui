@@ -1,11 +1,15 @@
 """Tests for Phase 10-11 features: notifications, window state, keyboard shortcuts, quick-open."""
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from PyQt6.QtWidgets import QMessageBox
+
+from s3ui.core.credentials import CredentialStore, Profile
 from s3ui.db.database import Database, get_pref, set_pref
-from s3ui.main_window import MainWindow
+from s3ui.main_window import MainWindow, _ConnectWorker
 
 
 @pytest.fixture
@@ -214,3 +218,411 @@ class TestTransferModelColumnFix:
         assert row.s3_key == "test.txt"
         assert row.total_bytes == 1000
         assert row.transferred_bytes == 500
+
+
+class TestConnectionFlow:
+    """Tests for profile discovery, connection, and bucket selection."""
+
+    @pytest.fixture
+    def mock_discover(self, monkeypatch):
+        """Mock discover_aws_profiles to return a known list."""
+        profiles = ["default", "work"]
+        monkeypatch.setattr(
+            "s3ui.main_window.discover_aws_profiles", lambda: profiles
+        )
+        return profiles
+
+    @pytest.fixture
+    def mock_discover_empty(self, monkeypatch):
+        """Mock discover_aws_profiles to return nothing."""
+        monkeypatch.setattr(
+            "s3ui.main_window.discover_aws_profiles", lambda: []
+        )
+
+    def test_populate_profiles_aws(self, qtbot, db, mock_keyring, mock_discover):
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        # _populate_profiles is called via _init_connection on a timer,
+        # but we can call it directly for testing
+        window._populate_profiles()
+
+        assert window._profile_combo.count() == 2
+        assert window._profile_combo.itemData(0) == "default"
+        assert window._profile_combo.itemData(1) == "work"
+        assert "AWS" in window._profile_combo.itemText(0)
+
+    def test_populate_profiles_mixed(self, qtbot, db, mock_keyring, mock_discover):
+        # Save a custom profile
+        store = CredentialStore()
+        store.save_profile(Profile(
+            name="custom", access_key_id="AKIA1", secret_access_key="secret1", region="us-east-1"
+        ))
+
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+        window._populate_profiles()
+
+        # 2 AWS + 1 custom
+        assert window._profile_combo.count() == 3
+        assert window._profile_combo.itemData(2) == "custom"
+
+    def test_populate_profiles_no_duplicates(self, qtbot, db, mock_keyring, mock_discover):
+        # Save a profile with the same name as an AWS profile
+        store = CredentialStore()
+        store.save_profile(Profile(
+            name="default", access_key_id="AKIA1", secret_access_key="secret1", region="us-east-1"
+        ))
+
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+        window._populate_profiles()
+
+        # "default" appears only once (from AWS)
+        assert window._profile_combo.count() == 2
+
+    def test_connect_worker_success(self, qtbot):
+        mock_client = MagicMock()
+        mock_client.list_buckets.return_value = ["bucket-a", "bucket-b"]
+        profile = Profile(name="test", access_key_id="AKIA", secret_access_key="secret", region="us-east-1")
+
+        with patch("s3ui.main_window.S3Client", return_value=mock_client):
+            worker = _ConnectWorker(profile)
+            with qtbot.waitSignal(worker.signals.connected, timeout=5000) as sig:
+                worker.start()
+
+        client, buckets = sig.args
+        assert buckets == ["bucket-a", "bucket-b"]
+
+    def test_connect_worker_failure(self, qtbot):
+        from s3ui.core.s3_client import S3ClientError
+
+        profile = Profile(name="test", access_key_id="AKIA", secret_access_key="bad", region="us-east-1")
+
+        with patch("s3ui.main_window.S3Client", side_effect=S3ClientError("Bad key", "detail")):
+            worker = _ConnectWorker(profile)
+            with qtbot.waitSignal(worker.signals.failed, timeout=5000) as sig:
+                worker.start()
+
+        assert "Bad key" in sig.args[0]
+
+    def test_on_connected_populates_buckets(self, qtbot, db, mock_keyring, mock_discover):
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        mock_client = MagicMock()
+        window._on_connected(mock_client, ["alpha", "beta", "gamma"])
+
+        assert window._bucket_combo.count() == 3
+        assert window._bucket_combo.itemData(0) == "alpha"
+        assert window._bucket_combo.itemData(1) == "beta"
+        assert window._bucket_combo.itemData(2) == "gamma"
+
+    def test_on_connected_saves_last_profile(self, qtbot, db, mock_keyring, mock_discover):
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        # Set a profile in the combo
+        window._populate_profiles()
+        window._profile_combo.setCurrentIndex(1)  # "work"
+
+        mock_client = MagicMock()
+        window._on_connected(mock_client, ["mybucket"])
+
+        assert get_pref(db, "last_profile") == "work"
+
+    def test_on_bucket_selected_sets_bucket(self, qtbot, db, mock_keyring, mock_discover):
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        # Set up S3 pane with a mock client
+        mock_client = MagicMock()
+        window._s3_pane.set_client(mock_client)
+
+        # Manually populate bucket combo
+        window._bucket_combo.addItem("test-bucket", "test-bucket")
+
+        with patch.object(window._s3_pane, "set_bucket") as mock_set:
+            window._on_bucket_selected(0)
+            mock_set.assert_called_once_with("test-bucket")
+
+    def test_on_bucket_selected_saves_preference(self, qtbot, db, mock_keyring, mock_discover):
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        mock_client = MagicMock()
+        window._s3_pane.set_client(mock_client)
+
+        window._bucket_combo.addItem("mybucket", "mybucket")
+        window._on_bucket_selected(0)
+
+        assert get_pref(db, "last_bucket") == "mybucket"
+
+    def test_on_connect_failed_sets_status(self, qtbot, db, mock_keyring, mock_discover):
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        window._on_connect_failed("Invalid access key")
+        assert "Connection failed" in window._status_label.text()
+        assert "Invalid access key" in window._status_label.text()
+
+    def test_on_connected_restores_last_bucket(self, qtbot, db, mock_keyring, mock_discover):
+        set_pref(db, "last_bucket", "beta")
+
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        mock_client = MagicMock()
+        with patch.object(window._s3_pane, "set_bucket") as mock_set:
+            window._on_connected(mock_client, ["alpha", "beta", "gamma"])
+            mock_set.assert_called_once_with("beta")
+            assert window._bucket_combo.currentData() == "beta"
+
+    def test_init_connection_no_profiles_shows_wizard(
+        self, qtbot, db, mock_keyring, mock_discover_empty
+    ):
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        with patch.object(window, "_show_setup_wizard") as mock_wizard:
+            window._init_connection()
+            mock_wizard.assert_called_once()
+
+    def test_init_connection_restores_last_profile(
+        self, qtbot, db, mock_keyring, mock_discover
+    ):
+        set_pref(db, "last_profile", "work")
+
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        with patch.object(window, "_connect_to_profile") as mock_connect:
+            window._init_connection()
+            assert window._profile_combo.currentData() == "work"
+            mock_connect.assert_called_once()
+            profile = mock_connect.call_args[0][0]
+            assert profile.name == "work"
+            assert profile.is_aws_profile is True
+
+    def test_open_settings_passes_store_and_db(self, qtbot, db, mock_keyring, mock_discover):
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        with patch("s3ui.main_window.SettingsDialog") as MockDialog:
+            MockDialog.return_value.exec.return_value = 0
+            window._open_settings()
+            MockDialog.assert_called_once_with(
+                store=window._store, db=db, parent=window
+            )
+
+
+class TestUploadDownloadWiring:
+    """Tests for upload/download signal wiring and transfer creation."""
+
+    @pytest.fixture
+    def connected_window(self, qtbot, db, mock_keyring):
+        """Create a MainWindow with a mock S3 client connected and a bucket selected."""
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("s3ui.main_window.discover_aws_profiles", lambda: ["default"])
+
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        mock_client = MagicMock()
+        mock_client.list_buckets.return_value = ["test-bucket"]
+        window._s3_client = mock_client
+        window._s3_pane.set_client(mock_client)
+
+        # Populate combos
+        window._populate_profiles()
+        window._bucket_combo.blockSignals(True)
+        window._bucket_combo.addItem("test-bucket", "test-bucket")
+        window._bucket_combo.blockSignals(False)
+
+        # Select bucket (creates engine)
+        window._on_bucket_selected(0)
+
+        monkeypatch.undo()
+        yield window
+
+    def test_upload_signal_connected(self, connected_window):
+        """upload_requested signal triggers _enqueue_uploads."""
+        with patch.object(connected_window, "_enqueue_uploads") as mock:
+            connected_window._local_pane.upload_requested.emit(["/tmp/test.txt"])
+            mock.assert_called_once_with(["/tmp/test.txt"])
+
+    def test_files_dropped_signal_connected(self, connected_window):
+        """files_dropped signal triggers _enqueue_uploads."""
+        with patch.object(connected_window, "_enqueue_uploads") as mock:
+            connected_window._s3_pane.files_dropped.emit(["/tmp/test.txt"])
+            mock.assert_called_once_with(["/tmp/test.txt"])
+
+    def test_download_signal_connected(self, connected_window, tmp_path):
+        """download_requested signal creates download transfers."""
+        from s3ui.models.s3_objects import S3Item
+
+        connected_window._local_pane.navigate_to(str(tmp_path), record_history=False)
+        items = [S3Item(name="test.txt", key="test.txt", is_prefix=False, size=100)]
+        connected_window._s3_pane.download_requested.emit(items)
+
+        rows = connected_window._db.fetchall(
+            "SELECT * FROM transfers WHERE direction = 'download'"
+        )
+        assert len(rows) == 1
+
+    def test_transfer_engine_created_on_bucket_select(self, connected_window):
+        """TransferEngine is created when a bucket is selected."""
+        assert connected_window._transfer_engine is not None
+
+    def test_ensure_bucket_id_creates_record(self, connected_window):
+        """_ensure_bucket_id creates a bucket record if none exists."""
+        bucket_id = connected_window._ensure_bucket_id()
+        assert bucket_id is not None
+        assert bucket_id > 0
+
+    def test_ensure_bucket_id_reuses_existing(self, connected_window):
+        """_ensure_bucket_id returns existing bucket record."""
+        id1 = connected_window._ensure_bucket_id()
+        id2 = connected_window._ensure_bucket_id()
+        assert id1 == id2
+
+    def test_enqueue_uploads_creates_transfers(self, connected_window, tmp_path):
+        """_enqueue_uploads creates transfer records in the database."""
+        db = connected_window._db
+
+        # Create test files
+        f1 = tmp_path / "file1.txt"
+        f1.write_text("hello")
+        f2 = tmp_path / "file2.txt"
+        f2.write_text("world!")
+
+        connected_window._enqueue_uploads([str(f1), str(f2)])
+
+        rows = db.fetchall("SELECT * FROM transfers WHERE direction = 'upload'")
+        assert len(rows) == 2
+        keys = {r["object_key"] for r in rows}
+        assert "file1.txt" in keys
+        assert "file2.txt" in keys
+
+    def test_enqueue_uploads_with_prefix(self, connected_window, tmp_path):
+        """Uploads use the current S3 prefix as the key prefix."""
+        db = connected_window._db
+        connected_window._s3_pane._current_prefix = "docs/"
+
+        f = tmp_path / "readme.txt"
+        f.write_text("data")
+        connected_window._enqueue_uploads([str(f)])
+
+        row = db.fetchone(
+            "SELECT object_key FROM transfers WHERE direction = 'upload'"
+        )
+        assert row["object_key"] == "docs/readme.txt"
+
+    def test_enqueue_uploads_directory(self, connected_window, tmp_path):
+        """Uploading a directory recursively enqueues all files."""
+        db = connected_window._db
+
+        sub = tmp_path / "mydir"
+        sub.mkdir()
+        (sub / "a.txt").write_text("a")
+        (sub / "b.txt").write_text("b")
+        nested = sub / "inner"
+        nested.mkdir()
+        (nested / "c.txt").write_text("c")
+
+        connected_window._enqueue_uploads([str(sub)])
+
+        rows = db.fetchall("SELECT object_key FROM transfers ORDER BY object_key")
+        keys = [r["object_key"] for r in rows]
+        assert "mydir/a.txt" in keys
+        assert "mydir/b.txt" in keys
+        assert "mydir/inner/c.txt" in keys
+
+    def test_download_requested_creates_transfers(self, connected_window, tmp_path):
+        """_on_download_requested creates download transfer records."""
+        from s3ui.models.s3_objects import S3Item
+
+        db = connected_window._db
+
+        # Point local pane at a real dir
+        connected_window._local_pane.navigate_to(str(tmp_path), record_history=False)
+
+        items = [
+            S3Item(name="photo.jpg", key="photo.jpg", is_prefix=False, size=1024),
+            S3Item(name="data.csv", key="data.csv", is_prefix=False, size=2048),
+        ]
+        connected_window._on_download_requested(items)
+
+        rows = db.fetchall("SELECT * FROM transfers WHERE direction = 'download'")
+        assert len(rows) == 2
+        assert rows[0]["total_bytes"] in (1024, 2048)
+
+    def test_download_skips_prefixes(self, connected_window, tmp_path):
+        """_on_download_requested skips prefix (folder) items."""
+        from s3ui.models.s3_objects import S3Item
+
+        db = connected_window._db
+        connected_window._local_pane.navigate_to(str(tmp_path), record_history=False)
+
+        items = [
+            S3Item(name="folder/", key="folder/", is_prefix=True),
+        ]
+        connected_window._on_download_requested(items)
+
+        rows = db.fetchall("SELECT * FROM transfers WHERE direction = 'download'")
+        assert len(rows) == 0
+
+    def test_upload_not_connected_shows_status(self, qtbot, db, mock_keyring):
+        """Upload without connection shows a status message."""
+        window = MainWindow(db=db)
+        qtbot.addWidget(window)
+
+        window._enqueue_uploads(["/tmp/fake.txt"])
+        assert "Not connected" in window._status_label.text()
+
+    def test_transfer_panel_control_signals(self, connected_window):
+        """Transfer panel pause/resume/cancel/retry signals reach the engine."""
+        engine = connected_window._transfer_engine
+        with patch.object(engine, "pause") as mock_pause:
+            connected_window._on_pause_transfer(42)
+            mock_pause.assert_called_once_with(42)
+        with patch.object(engine, "resume") as mock_resume:
+            connected_window._on_resume_transfer(42)
+            mock_resume.assert_called_once_with(42)
+        with patch.object(engine, "cancel") as mock_cancel:
+            connected_window._on_cancel_transfer(42)
+            mock_cancel.assert_called_once_with(42)
+        with patch.object(engine, "retry") as mock_retry:
+            connected_window._on_retry_transfer(42)
+            mock_retry.assert_called_once_with(42)
+
+    def test_delete_requested_calls_delete(self, connected_window):
+        """_on_delete_requested deletes objects after confirmation."""
+        from s3ui.models.s3_objects import S3Item
+
+        mock_client = connected_window._s3_client
+        mock_client.delete_objects.return_value = []  # no failures
+
+        items = [
+            S3Item(name="old.txt", key="old.txt", is_prefix=False, size=100),
+        ]
+
+        with patch("s3ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes):
+            connected_window._on_delete_requested(items)
+
+        # Worker runs in background — wait for it
+        if connected_window._delete_worker:
+            connected_window._delete_worker.wait(3000)
+
+        mock_client.delete_objects.assert_called_once_with("test-bucket", ["old.txt"])
+
+    def test_delete_cancelled_by_user(self, connected_window):
+        """Delete is cancelled if user clicks No."""
+        from s3ui.models.s3_objects import S3Item
+
+        items = [S3Item(name="keep.txt", key="keep.txt", is_prefix=False, size=100)]
+
+        with patch("s3ui.main_window.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+            connected_window._on_delete_requested(items)
+
+        connected_window._s3_client.delete_objects.assert_not_called()

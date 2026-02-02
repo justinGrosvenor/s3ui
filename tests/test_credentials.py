@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from s3ui.core.credentials import CredentialStore, Profile
+from s3ui.core.credentials import CredentialStore, Profile, discover_aws_profiles
 from s3ui.core.errors import ERROR_MESSAGES, translate_error
 
 
@@ -99,6 +99,41 @@ class TestCredentialStore:
 
         assert result.success is False
         assert "connect" in result.error_message.lower()
+
+    def test_save_aws_profile(self, store: CredentialStore):
+        """AWS CLI profiles are saved with is_aws_profile flag."""
+        profile = Profile(name="work", region="eu-west-1", is_aws_profile=True)
+        store.save_profile(profile)
+        loaded = store.get_profile("work")
+        assert loaded is not None
+        assert loaded.is_aws_profile is True
+        assert loaded.access_key_id == ""
+        assert loaded.region == "eu-west-1"
+
+    def test_test_connection_aws_profile(self, store: CredentialStore):
+        """Testing an AWS CLI profile uses boto3.Session."""
+        profile = Profile(name="default", region="us-east-1", is_aws_profile=True)
+        mock_session = MagicMock()
+        mock_client = MagicMock()
+        mock_client.list_buckets.return_value = {"Buckets": [{"Name": "b1"}]}
+        mock_session.client.return_value = mock_client
+
+        with patch("boto3.Session", return_value=mock_session) as mock_sess_cls:
+            result = store.test_connection(profile)
+
+        mock_sess_cls.assert_called_once_with(profile_name="default")
+        assert result.success is True
+        assert result.buckets == ["b1"]
+
+
+class TestDiscoverAwsProfiles:
+    def test_returns_list(self):
+        profiles = discover_aws_profiles()
+        assert isinstance(profiles, list)
+
+    def test_returns_sorted_list(self):
+        profiles = discover_aws_profiles()
+        assert profiles == sorted(profiles)
 
 
 class TestErrorTranslation:

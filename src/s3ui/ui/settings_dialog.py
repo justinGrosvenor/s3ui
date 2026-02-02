@@ -167,6 +167,12 @@ class _ProfileEditDialog(QDialog):
                     break
         layout.addRow("Region:", self._region_combo)
 
+        self._endpoint_edit = QLineEdit()
+        self._endpoint_edit.setPlaceholderText("e.g., http://localhost:9000")
+        if profile:
+            self._endpoint_edit.setText(profile.endpoint_url)
+        layout.addRow("Endpoint URL (optional):", self._endpoint_edit)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -179,6 +185,7 @@ class _ProfileEditDialog(QDialog):
         access_key = self._access_key_edit.text().strip()
         secret_key = self._secret_key_edit.text().strip()
         region = self._region_combo.currentData()
+        endpoint_url = self._endpoint_edit.text().strip()
 
         if not name or not access_key or not secret_key:
             QMessageBox.warning(self, "Missing Fields", "Please fill in all fields.")
@@ -189,6 +196,7 @@ class _ProfileEditDialog(QDialog):
             access_key_id=access_key,
             secret_access_key=secret_key,
             region=region,
+            endpoint_url=endpoint_url,
         )
         self._store.save_profile(profile)
         self.accept()

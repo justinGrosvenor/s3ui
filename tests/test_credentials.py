@@ -98,6 +98,48 @@ class TestCredentialStore:
         assert result.success is False
         assert "connect" in result.error_message.lower()
 
+    def test_save_and_read_endpoint_url(self, store: CredentialStore):
+        """endpoint_url is persisted through save/load cycle."""
+        profile = Profile(
+            name="minio",
+            access_key_id="minioadmin",
+            secret_access_key="minioadmin",
+            region="us-east-1",
+            endpoint_url="http://localhost:9000",
+        )
+        store.save_profile(profile)
+        loaded = store.get_profile("minio")
+        assert loaded is not None
+        assert loaded.endpoint_url == "http://localhost:9000"
+
+    def test_endpoint_url_defaults_empty(self, store: CredentialStore, sample_profile: Profile):
+        """Profiles saved without endpoint_url load with empty string."""
+        store.save_profile(sample_profile)
+        loaded = store.get_profile("test")
+        assert loaded is not None
+        assert loaded.endpoint_url == ""
+
+    def test_test_connection_passes_endpoint(self, store: CredentialStore):
+        """test_connection passes endpoint_url to boto3.client."""
+        profile = Profile(
+            name="minio",
+            access_key_id="minioadmin",
+            secret_access_key="minioadmin",
+            region="us-east-1",
+            endpoint_url="http://localhost:9000",
+        )
+        mock_client = MagicMock()
+        mock_client.list_buckets.return_value = {"Buckets": []}
+        with patch("boto3.client", return_value=mock_client) as mock_boto:
+            store.test_connection(profile)
+        mock_boto.assert_called_once_with(
+            "s3",
+            aws_access_key_id="minioadmin",
+            aws_secret_access_key="minioadmin",
+            region_name="us-east-1",
+            endpoint_url="http://localhost:9000",
+        )
+
     def test_save_aws_profile(self, store: CredentialStore):
         """AWS CLI profiles are saved with is_aws_profile flag."""
         profile = Profile(name="work", region="eu-west-1", is_aws_profile=True)

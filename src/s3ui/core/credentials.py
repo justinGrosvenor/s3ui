@@ -20,6 +20,7 @@ class Profile:
     access_key_id: str = ""
     secret_access_key: str = ""
     region: str = ""
+    endpoint_url: str = ""
     is_aws_profile: bool = False  # True = use boto3 Session(profile_name=name)
 
 
@@ -84,6 +85,7 @@ class CredentialStore:
                 access_key_id=data.get("access_key_id", ""),
                 secret_access_key=data.get("secret_access_key", ""),
                 region=data.get("region", ""),
+                endpoint_url=data.get("endpoint_url", ""),
                 is_aws_profile=data.get("is_aws_profile", False),
             )
         except (json.JSONDecodeError, KeyError, TypeError):
@@ -97,6 +99,7 @@ class CredentialStore:
                 "access_key_id": profile.access_key_id,
                 "secret_access_key": profile.secret_access_key,
                 "region": profile.region,
+                "endpoint_url": profile.endpoint_url,
                 "is_aws_profile": profile.is_aws_profile,
             }
         )
@@ -127,11 +130,13 @@ class CredentialStore:
         try:
             import boto3
 
+            endpoint = profile.endpoint_url or None
             if profile.is_aws_profile:
                 session = boto3.Session(profile_name=profile.name)
                 client = session.client(
                     "s3",
                     region_name=profile.region or None,
+                    endpoint_url=endpoint,
                 )
             else:
                 client = boto3.client(
@@ -139,6 +144,7 @@ class CredentialStore:
                     aws_access_key_id=profile.access_key_id,
                     aws_secret_access_key=profile.secret_access_key,
                     region_name=profile.region,
+                    endpoint_url=endpoint,
                 )
             response = client.list_buckets()
             bucket_names = [b["Name"] for b in response.get("Buckets", [])]

@@ -77,10 +77,11 @@ class WelcomePage(QWizardPage):
 
         layout = QVBoxLayout(self)
         label = QLabel(
-            "S3UI is a native file manager for Amazon S3.\n\n"
+            "S3UI is a native file manager for Amazon S3\n"
+            "and S3-compatible services like MinIO.\n\n"
             "You can browse, upload, download, and manage files\n"
-            "in your S3 buckets with a familiar dual-pane interface.\n\n"
-            "Let's get started by connecting your AWS account."
+            "in your buckets with a familiar dual-pane interface.\n\n"
+            "Let's get started by connecting your account."
         )
         label.setWordWrap(True)
         layout.addWidget(label)
@@ -241,6 +242,7 @@ class CredentialPage(QWizardPage):
             access_key = self._manual_widget.access_key()
             secret_key = self._manual_widget.secret_key()
             region = self._manual_widget.region()
+            endpoint_url = self._manual_widget.endpoint_url()
             if not name or not access_key or not secret_key:
                 return None
             return Profile(
@@ -248,6 +250,7 @@ class CredentialPage(QWizardPage):
                 access_key_id=access_key,
                 secret_access_key=secret_key,
                 region=region,
+                endpoint_url=endpoint_url,
             )
 
     def _on_test_result(self, result: TestResult) -> None:
@@ -334,6 +337,12 @@ class _ManualCredentialWidget(QWidget):
             self._region_combo.addItem(f"{display_name} ({region_code})", region_code)
         layout.addWidget(self._region_combo)
 
+        # Endpoint URL (for MinIO, LocalStack, etc.)
+        layout.addWidget(QLabel("Endpoint URL (optional, for S3-compatible services):"))
+        self._endpoint_edit = QLineEdit()
+        self._endpoint_edit.setPlaceholderText("e.g., http://localhost:9000")
+        layout.addWidget(self._endpoint_edit)
+
     def _toggle_visibility(self) -> None:
         if self._secret_key_edit.echoMode() == QLineEdit.EchoMode.Password:
             self._secret_key_edit.setEchoMode(QLineEdit.EchoMode.Normal)
@@ -353,6 +362,9 @@ class _ManualCredentialWidget(QWidget):
 
     def region(self) -> str:
         return self._region_combo.currentData()
+
+    def endpoint_url(self) -> str:
+        return self._endpoint_edit.text().strip()
 
 
 class BucketPage(QWizardPage):

@@ -34,11 +34,13 @@ class S3Client:
         profile: Profile,
         cost_tracker: CostTracker | None = None,
     ) -> None:
+        endpoint = profile.endpoint_url or None
         if profile.is_aws_profile:
             session = boto3.Session(profile_name=profile.name)
             self._client = session.client(
                 "s3",
                 region_name=profile.region or None,
+                endpoint_url=endpoint,
             )
         else:
             self._client = boto3.client(
@@ -46,13 +48,15 @@ class S3Client:
                 aws_access_key_id=profile.access_key_id,
                 aws_secret_access_key=profile.secret_access_key,
                 region_name=profile.region,
+                endpoint_url=endpoint,
             )
         self._cost = cost_tracker
         self._profile_name = profile.name
         logger.info(
-            "S3Client created for profile '%s' region '%s' (aws_profile=%s)",
+            "S3Client created for profile '%s' region '%s' endpoint='%s' (aws_profile=%s)",
             profile.name,
             profile.region,
+            profile.endpoint_url,
             profile.is_aws_profile,
         )
 

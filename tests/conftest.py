@@ -20,7 +20,7 @@ def tmp_db(tmp_db_path: Path) -> sqlite3.Connection:
     conn.close()
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def mock_keyring(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     """Mock the keyring module with a simple dict backend."""
     store: dict[str, str] = {}

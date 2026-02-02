@@ -47,10 +47,10 @@ dev = [
 s3ui = "s3ui.app:main"
 
 [project.urls]
-Homepage = "https://github.com/OWNER/s3ui"
-Documentation = "https://github.com/OWNER/s3ui/tree/main/docs"
-Repository = "https://github.com/OWNER/s3ui"
-Issues = "https://github.com/OWNER/s3ui/issues"
+Homepage = "https://github.com/justinGrosvenor/s3ui"
+Documentation = "https://github.com/justinGrosvenor/s3ui/tree/main/docs"
+Repository = "https://github.com/justinGrosvenor/s3ui"
+Issues = "https://github.com/justinGrosvenor/s3ui/issues"
 
 [tool.hatch.version]
 path = "src/s3ui/__init__.py"

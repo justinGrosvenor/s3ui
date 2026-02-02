@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="s3ui.png" alt="S3UI" width="128">
+  <img src="https://raw.githubusercontent.com/justinGrosvenor/s3ui/main/s3ui.png" alt="S3UI" width="128">
 </p>
 
 <h1 align="center">S3UI</h1>

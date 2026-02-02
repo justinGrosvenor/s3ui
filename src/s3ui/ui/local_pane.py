@@ -190,16 +190,19 @@ class LocalPaneWidget(QWidget):
         self._forward_btn.setEnabled(len(self._history_forward) > 0)
 
     def _update_footer(self, path: str = "") -> None:
-        index = self._model.index(self._current_path)
-        count = self._model.rowCount(index)
-        total_size = 0
-        for i in range(count):
-            child = self._model.index(i, 0, index)
-            if not self._model.isDir(child):
-                total_size += self._model.size(child)
+        try:
+            index = self._model.index(self._current_path)
+            count = self._model.rowCount(index)
+            total_size = 0
+            for i in range(count):
+                child = self._model.index(i, 0, index)
+                if not self._model.isDir(child):
+                    total_size += self._model.size(child)
 
-        size_str = _format_size(total_size)
-        self._footer.setText(f"{count} items, {size_str}")
+            size_str = _format_size(total_size)
+            self._footer.setText(f"{count} items, {size_str}")
+        except RuntimeError:
+            return  # C++ widget already deleted during shutdown
 
     def _on_context_menu(self, pos) -> None:
         from PyQt6.QtWidgets import QMenu

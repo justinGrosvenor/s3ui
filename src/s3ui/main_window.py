@@ -144,6 +144,7 @@ class MainWindow(QMainWindow):
 
     def _setup_toolbar(self) -> None:
         toolbar = QToolBar("Main")
+        toolbar.setObjectName("MainToolBar")
         toolbar.setMovable(False)
         toolbar.setFloatable(False)
         self.addToolBar(toolbar)
@@ -628,6 +629,7 @@ class MainWindow(QMainWindow):
 
     def _setup_transfer_dock(self) -> None:
         self._transfer_dock = QDockWidget("Transfers", self)
+        self._transfer_dock.setObjectName("TransfersDock")
         self._transfer_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
         self._transfer_dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
         self._transfer_panel = TransferPanelWidget(db=self._db)

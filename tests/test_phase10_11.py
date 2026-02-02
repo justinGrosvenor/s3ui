@@ -301,6 +301,7 @@ class TestConnectionFlow:
             with qtbot.waitSignal(worker.signals.connected, timeout=5000) as sig:
                 worker.start()
 
+        worker.wait(5000)  # join thread before it goes out of scope
         client, buckets = sig.args
         assert buckets == ["bucket-a", "bucket-b"]
 
@@ -319,6 +320,7 @@ class TestConnectionFlow:
             with qtbot.waitSignal(worker.signals.failed, timeout=5000) as sig:
                 worker.start()
 
+        worker.wait(5000)  # join thread before it goes out of scope
         assert "Bad key" in sig.args[0]
 
     def test_on_connected_populates_buckets(self, qtbot, db, mock_keyring, mock_discover):

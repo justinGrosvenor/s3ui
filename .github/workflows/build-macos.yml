@@ -1,0 +1,58 @@
+name: Build macOS App
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Generate icons
+        run: |
+          brew install librsvg
+          bash build/generate-icons.sh
+
+      - name: Build .app with PyInstaller
+        run: pyinstaller build/s3ui.spec
+
+      - name: Sign and create DMG
+        env:
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+            bash build/scripts/sign-macos.sh
+          else
+            echo "No signing identity — creating unsigned DMG"
+            hdiutil create -volname "S3UI" -srcfolder dist/S3UI.app \
+              -ov -format UDZO "S3UI-${GITHUB_REF_NAME}-macos.dmg"
+          fi
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: S3UI-macos-dmg
+          path: S3UI-*.dmg
+
+      - name: Attach DMG to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: S3UI-*.dmg

@@ -12,6 +12,7 @@ A native desktop file manager for Amazon S3 and S3-compatible services.
   <a href="https://pypi.org/project/s3ui/"><img src="https://img.shields.io/pypi/v/s3ui" alt="PyPI"></a>
   <a href="https://pypi.org/project/s3ui/"><img src="https://img.shields.io/pypi/pyversions/s3ui" alt="Python"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/justinGrosvenor/s3ui" alt="License"></a>
+  <a href="https://pypi.org/project/s3ui/"><img src="https://img.shields.io/pypi/dm/s3ui" alt="Downloads"></a>
 </p>
 
 ---

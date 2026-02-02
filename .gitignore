@@ -6,7 +6,16 @@ __pycache__/
 *.egg-info/
 *.egg
 dist/
-build/
+build/*
+!build/s3ui.spec
+!build/generate-icons.sh
+!build/icons/
+build/icons/*
+!build/icons/icon.svg
+!build/scripts/
+build/scripts/*
+!build/scripts/sign-macos.sh
+!build/entitlements.plist
 *.whl
 
 # Virtual environments
@@ -45,7 +54,6 @@ coverage.xml
 *.zip
 
 # PyInstaller
-*.spec
 *.manifest
 
 # Logs

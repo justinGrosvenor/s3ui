@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="100%" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="cloud" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#E5E7EB"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect x="32" y="32" width="960" height="960" rx="200" ry="200" fill="url(#bg)"/>
+  <!-- Cloud shape -->
+  <g transform="translate(512, 420)">
+    <ellipse cx="0" cy="0" rx="200" ry="140" fill="url(#cloud)"/>
+    <ellipse cx="-160" cy="40" rx="120" ry="100" fill="url(#cloud)"/>
+    <ellipse cx="160" cy="40" rx="120" ry="100" fill="url(#cloud)"/>
+    <rect x="-280" y="0" width="560" height="140" fill="url(#cloud)"/>
+  </g>
+  <!-- Folder tab -->
+  <g transform="translate(512, 620)">
+    <path d="M-220 0 L-220 -40 L-100 -40 L-60 0 Z" fill="#F59E0B"/>
+    <!-- Folder body -->
+    <rect x="-220" y="0" width="440" height="200" rx="16" fill="#F59E0B"/>
+    <rect x="-220" y="20" width="440" height="180" rx="16" fill="#FBBF24"/>
+    <!-- Arrow up from folder -->
+    <polygon points="0,-80 60,-20 20,-20 20,60 -20,60 -20,-20 -60,-20" fill="#1D4ED8" opacity="0.9"/>
+  </g>
+  <!-- S3 text -->
+  <text x="512" y="270" font-family="system-ui, -apple-system, Arial, sans-serif" font-size="120" font-weight="bold" fill="#FFFFFF" text-anchor="middle" opacity="0.95">S3</text>
+</svg>

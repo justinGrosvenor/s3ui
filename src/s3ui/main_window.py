@@ -763,14 +763,19 @@ class MainWindow(QMainWindow):
         current_profile = self._profile_combo.currentData()
         dialog = SettingsDialog(store=self._store, db=self._db, parent=self)
         dialog.exec()
-        # Refresh profiles in case credentials were changed
+        # Refresh profile list in case credentials were added/removed
         self._populate_profiles()
-        if current_profile:
-            idx = self._profile_combo.findData(current_profile)
+        # Switch to newly added profile, otherwise restore previous selection
+        new_profile = dialog.last_added_profile
+        target = new_profile or current_profile
+        if target:
+            idx = self._profile_combo.findData(target)
             if idx >= 0:
                 self._profile_combo.blockSignals(True)
                 self._profile_combo.setCurrentIndex(idx)
                 self._profile_combo.blockSignals(False)
+                if new_profile:
+                    self._on_profile_selected(idx)
 
     # --- Keyboard shortcuts ---
 

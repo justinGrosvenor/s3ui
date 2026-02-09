@@ -43,6 +43,7 @@ class CredentialsTab(QWidget):
     def __init__(self, store: CredentialStore, parent=None) -> None:
         super().__init__(parent)
         self._store = store
+        self.last_added_profile: str | None = None
 
         layout = QVBoxLayout(self)
 
@@ -91,6 +92,7 @@ class CredentialsTab(QWidget):
     def _on_add(self) -> None:
         dialog = _ProfileEditDialog(self._store, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.last_added_profile = dialog.profile_name()
             self._refresh_list()
             self.profile_changed.emit()
 
@@ -188,6 +190,10 @@ class _ProfileEditDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
+
+    def profile_name(self) -> str:
+        """Return the profile name entered in the dialog."""
+        return self._name_edit.text().strip()
 
     def _on_accept(self) -> None:
         name = self._name_edit.text().strip()
@@ -338,6 +344,11 @@ class SettingsDialog(QDialog):
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    @property
+    def last_added_profile(self) -> str | None:
+        """Return the name of the last profile added in the Credentials tab."""
+        return self._cred_tab.last_added_profile
 
     def _on_accept(self) -> None:
         self._transfers_tab.apply_settings()

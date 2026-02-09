@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 from dataclasses import dataclass, field
 
 import keyring
@@ -12,6 +13,32 @@ from s3ui.core.errors import translate_error
 logger = logging.getLogger("s3ui.credentials")
 
 PROFILES_INDEX_KEY = "profiles"
+
+
+def _init_keyring_backend() -> None:
+    """Detect broken keyring backend (e.g. KDE 6 kwallet) and fall back to SecretService."""
+    if sys.platform != "linux":
+        return
+    try:
+        keyring.get_password(KEYRING_SERVICE, "__probe__")
+    except keyring.errors.InitError:
+        logger.warning("Default keyring backend failed, trying SecretService fallback")
+        try:
+            from keyring.backends import SecretService
+
+            keyring.set_keyring(SecretService.Keyring())
+            logger.info("Using SecretService keyring backend")
+        except Exception:
+            logger.warning("SecretService fallback unavailable", exc_info=True)
+    except Exception:
+        pass  # get_password returning None is fine
+
+
+_init_keyring_backend()
+
+
+class KeyringError(Exception):
+    """Raised when the OS keyring backend is unavailable or fails."""
 
 
 @dataclass
@@ -65,7 +92,11 @@ class CredentialStore:
 
     def list_profiles(self) -> list[str]:
         """Return names of all saved custom profiles (from keyring)."""
-        raw = keyring.get_password(KEYRING_SERVICE, PROFILES_INDEX_KEY)
+        try:
+            raw = keyring.get_password(KEYRING_SERVICE, PROFILES_INDEX_KEY)
+        except Exception:
+            logger.warning("Keyring unavailable — cannot list profiles", exc_info=True)
+            return []
         if not raw:
             return []
         try:
@@ -75,7 +106,11 @@ class CredentialStore:
 
     def get_profile(self, name: str) -> Profile | None:
         """Load a custom profile by name from the keyring."""
-        raw = keyring.get_password(KEYRING_SERVICE, f"profile:{name}")
+        try:
+            raw = keyring.get_password(KEYRING_SERVICE, f"profile:{name}")
+        except Exception:
+            logger.warning("Keyring unavailable — cannot load profile '%s'", name, exc_info=True)
+            return None
         if not raw:
             return None
         try:
@@ -93,7 +128,10 @@ class CredentialStore:
             return None
 
     def save_profile(self, profile: Profile) -> None:
-        """Save a profile to the keyring and update the index."""
+        """Save a profile to the keyring and update the index.
+
+        Raises KeyringError if the keyring backend is unavailable.
+        """
         data = json.dumps(
             {
                 "access_key_id": profile.access_key_id,
@@ -103,23 +141,36 @@ class CredentialStore:
                 "is_aws_profile": profile.is_aws_profile,
             }
         )
-        keyring.set_password(KEYRING_SERVICE, f"profile:{profile.name}", data)
+        try:
+            keyring.set_password(KEYRING_SERVICE, f"profile:{profile.name}", data)
 
-        # Update profile index
-        profiles = self.list_profiles()
-        if profile.name not in profiles:
-            profiles.append(profile.name)
-            keyring.set_password(KEYRING_SERVICE, PROFILES_INDEX_KEY, json.dumps(profiles))
+            # Update profile index
+            profiles = self.list_profiles()
+            if profile.name not in profiles:
+                profiles.append(profile.name)
+                keyring.set_password(KEYRING_SERVICE, PROFILES_INDEX_KEY, json.dumps(profiles))
+        except Exception as e:
+            logger.error(
+                "Keyring unavailable — cannot save profile '%s'", profile.name, exc_info=True
+            )
+            raise KeyringError(str(e)) from e
         logger.info("Saved profile '%s' (aws_profile=%s)", profile.name, profile.is_aws_profile)
 
     def delete_profile(self, name: str) -> None:
-        """Remove a profile from the keyring and index."""
-        keyring.delete_password(KEYRING_SERVICE, f"profile:{name}")
+        """Remove a profile from the keyring and index.
 
-        profiles = self.list_profiles()
-        if name in profiles:
-            profiles.remove(name)
-            keyring.set_password(KEYRING_SERVICE, PROFILES_INDEX_KEY, json.dumps(profiles))
+        Raises KeyringError if the keyring backend is unavailable.
+        """
+        try:
+            keyring.delete_password(KEYRING_SERVICE, f"profile:{name}")
+
+            profiles = self.list_profiles()
+            if name in profiles:
+                profiles.remove(name)
+                keyring.set_password(KEYRING_SERVICE, PROFILES_INDEX_KEY, json.dumps(profiles))
+        except Exception as e:
+            logger.error("Keyring unavailable — cannot delete profile '%s'", name, exc_info=True)
+            raise KeyringError(str(e)) from e
         logger.info("Deleted profile '%s'", name)
 
     def test_connection(self, profile: Profile) -> TestResult:

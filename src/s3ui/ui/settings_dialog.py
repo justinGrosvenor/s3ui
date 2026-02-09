@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from s3ui.core.credentials import CredentialStore, Profile, discover_aws_profiles
+from s3ui.core.credentials import CredentialStore, KeyringError, Profile, discover_aws_profiles
 from s3ui.db.database import get_bool_pref, get_int_pref, get_pref, set_pref
 from s3ui.ui.setup_wizard import AWS_REGIONS
 
@@ -117,7 +117,16 @@ class CredentialsTab(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._store.delete_profile(name)
+            try:
+                self._store.delete_profile(name)
+            except KeyringError:
+                QMessageBox.critical(
+                    self,
+                    "Keyring Error",
+                    "Could not delete profile — the system keyring is unavailable.\n\n"
+                    "Check your keyring/keychain configuration.",
+                )
+                return
             self._refresh_list()
             self.profile_changed.emit()
 
@@ -198,7 +207,16 @@ class _ProfileEditDialog(QDialog):
             region=region,
             endpoint_url=endpoint_url,
         )
-        self._store.save_profile(profile)
+        try:
+            self._store.save_profile(profile)
+        except KeyringError:
+            QMessageBox.critical(
+                self,
+                "Keyring Error",
+                "Could not save profile — the system keyring is unavailable.\n\n"
+                "Check your keyring/keychain configuration.",
+            )
+            return
         self.accept()
 
 

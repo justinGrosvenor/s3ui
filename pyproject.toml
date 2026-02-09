@@ -30,7 +30,7 @@ classifiers = [
 dependencies = [
     "PyQt6>=6.5",
     "boto3>=1.28",
-    "keyring>=24.0",
+    "keyring>=25.7",
 ]
 
 [project.optional-dependencies]

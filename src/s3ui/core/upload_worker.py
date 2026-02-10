@@ -37,7 +37,7 @@ def select_part_size(file_size: int) -> int:
 
 
 class UploadWorkerSignals(QObject):
-    progress = pyqtSignal(int, int, int)  # transfer_id, bytes_done, total
+    progress = pyqtSignal(int, object, object)  # transfer_id, bytes_done, total
     speed = pyqtSignal(int, float)  # transfer_id, bytes_per_sec
     finished = pyqtSignal(int)  # transfer_id
     failed = pyqtSignal(int, str, str)  # transfer_id, user_msg, detail

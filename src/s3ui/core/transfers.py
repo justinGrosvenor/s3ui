@@ -22,7 +22,7 @@ logger = logging.getLogger("s3ui.transfers")
 class TransferEngine(QObject):
     """Manages the transfer queue and worker pool."""
 
-    transfer_progress = pyqtSignal(int, int, int)  # transfer_id, bytes_done, total
+    transfer_progress = pyqtSignal(int, object, object)  # transfer_id, bytes_done, total
     transfer_speed = pyqtSignal(int, float)  # transfer_id, bytes_per_sec
     transfer_status_changed = pyqtSignal(int, str)  # transfer_id, new_status
     transfer_error = pyqtSignal(int, str, str)  # transfer_id, user_msg, detail

@@ -63,10 +63,26 @@ def _format_eta(seconds: float) -> str:
     return f"~{seconds / 3600:.1f} hr"
 
 
+def _format_size(size_bytes: int) -> str:
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    if size_bytes < 1024**3:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    return f"{size_bytes / (1024**3):.1f} GB"
+
+
 def _format_progress(transferred: int, total: int) -> str:
     if total <= 0:
+        return _format_size(transferred) if transferred > 0 else ""
+    return f"{_format_size(transferred)} / {_format_size(total)}"
+
+
+def _format_pct(transferred: int, total: int) -> str:
+    if total <= 0:
         return "0%"
-    pct = (transferred / total) * 100
+    pct = max(0, min((transferred / total) * 100, 100))
     return f"{pct:.0f}%"
 
 
@@ -80,7 +96,7 @@ def _format_status(row: TransferRow) -> str:
     if row.status == "paused":
         return "Paused"
     if row.status == "in_progress":
-        return _format_progress(row.transferred_bytes, row.total_bytes)
+        return _format_pct(row.transferred_bytes, row.total_bytes)
     return "Queued"
 
 

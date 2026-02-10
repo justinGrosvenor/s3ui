@@ -4,6 +4,7 @@ from s3ui.models.transfer_model import (
     TransferModel,
     TransferRow,
     _format_eta,
+    _format_pct,
     _format_progress,
     _format_speed,
     _format_status,
@@ -44,13 +45,31 @@ class TestFormatEta:
 
 class TestFormatProgress:
     def test_zero_total(self):
-        assert _format_progress(0, 0) == "0%"
+        assert _format_progress(0, 0) == ""
 
     def test_half(self):
-        assert _format_progress(50, 100) == "50%"
+        assert _format_progress(50, 100) == "50 B / 100 B"
 
     def test_complete(self):
-        assert _format_progress(100, 100) == "100%"
+        assert _format_progress(100, 100) == "100 B / 100 B"
+
+    def test_megabytes(self):
+        mb = 1024 * 1024
+        assert _format_progress(5 * mb, 10 * mb) == "5.0 MB / 10.0 MB"
+
+
+class TestFormatPct:
+    def test_zero_total(self):
+        assert _format_pct(0, 0) == "0%"
+
+    def test_half(self):
+        assert _format_pct(50, 100) == "50%"
+
+    def test_complete(self):
+        assert _format_pct(100, 100) == "100%"
+
+    def test_clamped(self):
+        assert _format_pct(200, 100) == "100%"
 
 
 class TestFormatStatus:

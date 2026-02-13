@@ -151,14 +151,14 @@ class MainWindow(QMainWindow):
 
         self._profile_combo = QComboBox()
         self._profile_combo.setToolTip("AWS Profile")
-        self._profile_combo.setMinimumWidth(100)
+        self._profile_combo.setMinimumWidth(200)
         toolbar.addWidget(self._profile_combo)
 
         toolbar.addSeparator()
 
         self._bucket_combo = QComboBox()
         self._bucket_combo.setToolTip("S3 Bucket")
-        self._bucket_combo.setMinimumWidth(150)
+        self._bucket_combo.setMinimumWidth(280)
         toolbar.addWidget(self._bucket_combo)
 
         spacer = QWidget()

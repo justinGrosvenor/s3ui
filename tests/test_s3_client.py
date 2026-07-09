@@ -100,6 +100,26 @@ class TestDeleteObject:
         objects, _ = client.list_objects("test-bucket")
         assert len(objects) == 0
 
+    def test_batch_delete_over_1000_keys(self, s3_env):
+        """Deletes exceeding S3's 1000-key request limit are chunked."""
+        client, raw = s3_env
+        keys = [f"bulk/{i:04d}.txt" for i in range(1050)]
+        for key in keys:
+            raw.put_object(Bucket="test-bucket", Key=key, Body=b"x")
+        failed = client.delete_objects("test-bucket", keys)
+        assert failed == []
+        objects, _ = client.list_objects("test-bucket", prefix="bulk/", delimiter="")
+        assert len(objects) == 0
+
+
+class TestPresignedUrl:
+    def test_generates_get_url(self, s3_env):
+        client, raw = s3_env
+        raw.put_object(Bucket="test-bucket", Key="share.txt", Body=b"hi")
+        url = client.generate_presigned_url("test-bucket", "share.txt")
+        assert "share.txt" in url
+        assert "Expires" in url or "X-Amz-Expires" in url
+
 
 class TestCopyObject:
     def test_copy_creates_at_destination(self, s3_env):

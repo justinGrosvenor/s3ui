@@ -202,22 +202,47 @@ class S3Client:
             self._handle_error(e, "delete_object")
 
     def delete_objects(self, bucket: str, keys: list[str]) -> list[str]:
-        """Batch delete up to 1000 objects. Returns list of keys that failed."""
+        """Batch delete objects, chunked to S3's 1000-key request limit.
+
+        Returns list of keys that failed. A chunk-level error marks that
+        chunk's keys failed and continues — earlier chunks are already gone
+        from S3, so raising would misreport them as still present.
+        """
+        logger.debug("delete_objects bucket=%s count=%d", bucket, len(keys))
+        failed: list[str] = []
+        for i in range(0, len(keys), 1000):
+            chunk = keys[i : i + 1000]
+            self._record("delete", len(chunk))
+            try:
+                response = self._client.delete_objects(
+                    Bucket=bucket,
+                    Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+                )
+            except Exception as e:
+                logger.error("delete_objects chunk failed (%d keys): %s", len(chunk), e)
+                failed.extend(chunk)
+                continue
+            failed.extend(e["Key"] for e in response.get("Errors", []))
+        if failed:
+            logger.warning("delete_objects partial failure: %d failed", len(failed))
+        return failed
+
+    def generate_presigned_url(self, bucket: str, key: str, expires_in: int = 3600) -> str:
+        """Generate a presigned GET URL for sharing an object."""
         try:
-            logger.debug("delete_objects bucket=%s count=%d", bucket, len(keys))
-            self._record("delete", len(keys))
-            response = self._client.delete_objects(
-                Bucket=bucket,
-                Delete={"Objects": [{"Key": k} for k in keys], "Quiet": True},
+            logger.debug(
+                "generate_presigned_url bucket=%s key='%s' expires_in=%d",
+                bucket,
+                key,
+                expires_in,
             )
-            errors = response.get("Errors", [])
-            if errors:
-                failed = [e["Key"] for e in errors]
-                logger.warning("delete_objects partial failure: %d failed", len(failed))
-                return failed
-            return []
+            return self._client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket, "Key": key},
+                ExpiresIn=expires_in,
+            )
         except Exception as e:
-            self._handle_error(e, "delete_objects")
+            self._handle_error(e, "generate_presigned_url")
 
     def copy_object(self, src_bucket: str, src_key: str, dst_bucket: str, dst_key: str) -> None:
         """Server-side copy with metadata preservation."""

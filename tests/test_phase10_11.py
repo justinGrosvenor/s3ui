@@ -373,7 +373,9 @@ class TestConnectionFlow:
         window._bucket_combo.addItem("mybucket", "mybucket")
         window._on_bucket_selected(0)
 
-        assert get_pref(db, "last_bucket") == "mybucket"
+        # Preference is scoped per profile — same-named buckets on other
+        # profiles are different buckets
+        assert get_pref(db, window._last_bucket_key()) == "mybucket"
 
     def test_on_connect_failed_sets_status(self, qtbot, db, mock_keyring, mock_discover):
         window = MainWindow(db=db)
@@ -621,8 +623,8 @@ class TestUploadDownloadWiring:
             connected_window._on_delete_requested(items)
 
         # Worker runs in background — wait for it
-        if connected_window._delete_worker:
-            connected_window._delete_worker.wait(3000)
+        for worker in list(connected_window._bg_workers):
+            worker.wait(3000)
 
         mock_client.delete_objects.assert_called_once_with("test-bucket", ["old.txt"])
 
@@ -639,11 +641,18 @@ class TestUploadDownloadWiring:
         connected_window._s3_client.delete_objects.assert_not_called()
 
     def test_delete_folder(self, connected_window):
-        """Folders (prefixes) can be deleted."""
+        """Folders (prefixes) are deleted recursively with their contents."""
         from s3ui.models.s3_objects import S3Item
 
         mock_client = connected_window._s3_client
         mock_client.delete_objects.return_value = []
+        mock_client.list_objects.return_value = (
+            [
+                S3Item(name="a.txt", key="my-folder/a.txt", is_prefix=False, size=1),
+                S3Item(name="b.txt", key="my-folder/sub/b.txt", is_prefix=False, size=1),
+            ],
+            [],
+        )
 
         items = [S3Item(name="my-folder", key="my-folder/", is_prefix=True)]
 
@@ -651,10 +660,14 @@ class TestUploadDownloadWiring:
         with patch("s3ui.main_window.QMessageBox.question", return_value=ret_yes):
             connected_window._on_delete_requested(items)
 
-        if connected_window._delete_worker:
-            connected_window._delete_worker.wait(3000)
+        for worker in list(connected_window._bg_workers):
+            worker.wait(3000)
 
-        mock_client.delete_objects.assert_called_once_with("test-bucket", ["my-folder/"])
+        mock_client.list_objects.assert_called_with("test-bucket", "my-folder/", delimiter="")
+        mock_client.delete_objects.assert_called_once_with(
+            "test-bucket",
+            ["my-folder/a.txt", "my-folder/sub/b.txt", "my-folder/"],
+        )
 
     def test_new_folder_creates_object(self, connected_window):
         """New folder creates an empty S3 object with trailing slash."""

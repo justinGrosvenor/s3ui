@@ -83,6 +83,9 @@ class S3PaneWidget(QWidget):
     get_info_requested = pyqtSignal(object)  # S3Item
     files_dropped = pyqtSignal(list)  # list of local file paths (str) dropped onto S3 pane
     quick_open_requested = pyqtSignal(object)  # S3Item — double-click file opens it
+    rename_requested = pyqtSignal(object)  # S3Item
+    copy_requested = pyqtSignal(list)  # list of S3Item
+    selection_changed = pyqtSignal(list)  # list of S3Item currently selected
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -177,6 +180,9 @@ class S3PaneWidget(QWidget):
         self._table.doubleClicked.connect(self._on_double_click)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_context_menu)
+        self._table.selectionModel().selectionChanged.connect(
+            lambda *_: self.selection_changed.emit(self.selected_items())
+        )
 
         # Accept drops on the viewport; handled via event filter
         self._table.setAcceptDrops(True)
@@ -472,10 +478,23 @@ class S3PaneWidget(QWidget):
             download_action = menu.addAction("Download")
             download_action.triggered.connect(lambda: self.download_requested.emit(selected))
 
+            files = [i for i in selected if not i.is_prefix]
+            if files:
+                copy_action = menu.addAction("Copy")
+                copy_action.triggered.connect(lambda: self.copy_requested.emit(files))
+
             menu.addSeparator()
 
             delete_action = menu.addAction("Delete")
             delete_action.triggered.connect(lambda: self.delete_requested.emit(selected))
+
+            if len(selected) == 1 and not selected[0].is_prefix:
+                menu.addSeparator()
+                rename_action = menu.addAction("Rename...")
+                rename_action.triggered.connect(lambda: self.rename_requested.emit(selected[0]))
+
+                link_action = menu.addAction("Copy Presigned URL")
+                link_action.triggered.connect(lambda: self._copy_presigned_url(selected[0]))
 
             if len(selected) == 1:
                 menu.addSeparator()
@@ -489,6 +508,21 @@ class S3PaneWidget(QWidget):
             refresh_action.triggered.connect(self.refresh)
 
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _copy_presigned_url(self, item: S3Item) -> None:
+        """Generate a presigned GET URL for the item and copy it to the clipboard."""
+        if not self._s3_client or not self._bucket:
+            return
+        from PyQt6.QtWidgets import QApplication
+
+        try:
+            url = self._s3_client.generate_presigned_url(self._bucket, item.key)
+        except Exception as e:
+            logger.warning("Presigned URL failed for %s: %s", item.key, e)
+            self.status_message.emit(f"Failed to create link: {e}")
+            return
+        QApplication.clipboard().setText(url)
+        self.status_message.emit(f"Copied presigned URL for '{item.name}' (valid 1 hour)")
 
     # --- Operation lock manager ---
 

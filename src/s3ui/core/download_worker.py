@@ -25,6 +25,7 @@ class DownloadWorkerSignals(QObject):
     speed = pyqtSignal(int, float)  # transfer_id, bytes_per_sec
     finished = pyqtSignal(int)  # transfer_id
     failed = pyqtSignal(int, str, str)  # transfer_id, user_msg, detail
+    stopped = pyqtSignal(int)  # transfer_id — worker exited due to pause/cancel
 
 
 class DownloadWorker(QRunnable):
@@ -228,14 +229,18 @@ class DownloadWorker(QRunnable):
             "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
             (self.transfer_id,),
         )
+        self.signals.stopped.emit(self.transfer_id)
         logger.info("Download %d cancelled", self.transfer_id)
 
     def _do_pause(self, offset: int) -> None:
+        # Guarded on in_progress: if the transfer was already re-queued by a
+        # quick resume, don't clobber that status
         self._db.execute(
             "UPDATE transfers SET status = 'paused', transferred = ?, "
-            "updated_at = datetime('now') WHERE id = ?",
+            "updated_at = datetime('now') WHERE id = ? AND status = 'in_progress'",
             (offset, self.transfer_id),
         )
+        self.signals.stopped.emit(self.transfer_id)
         logger.info("Download %d paused at offset %d", self.transfer_id, offset)
 
     def _update_speed(self, chunk_bytes: int) -> None:

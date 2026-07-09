@@ -41,6 +41,7 @@ class UploadWorkerSignals(QObject):
     speed = pyqtSignal(int, float)  # transfer_id, bytes_per_sec
     finished = pyqtSignal(int)  # transfer_id
     failed = pyqtSignal(int, str, str)  # transfer_id, user_msg, detail
+    stopped = pyqtSignal(int)  # transfer_id — worker exited due to pause/cancel
 
 
 class UploadWorker(QRunnable):
@@ -148,14 +149,14 @@ class UploadWorker(QRunnable):
                     (self.transfer_id, i + 1, offset, size),
                 )
         else:
-            # Resuming: reconcile with S3
+            # Resuming: reconcile with S3, keeping the ETags S3 reports so
+            # complete_multipart_upload gets one for every part
             s3_parts = self._s3.list_parts(self._bucket, object_key, upload_id)
-            s3_confirmed = {p["PartNumber"] for p in s3_parts}
-            for part_num in s3_confirmed:
+            for p in s3_parts:
                 self._db.execute(
-                    "UPDATE transfer_parts SET status = 'completed' "
+                    "UPDATE transfer_parts SET status = 'completed', etag = ? "
                     "WHERE transfer_id = ? AND part_number = ?",
-                    (self.transfer_id, part_num),
+                    (p["ETag"], self.transfer_id, p["PartNumber"]),
                 )
 
         # Upload pending parts
@@ -260,13 +261,18 @@ class UploadWorker(QRunnable):
             "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
             (self.transfer_id,),
         )
+        self.signals.stopped.emit(self.transfer_id)
         logger.info("Upload %d cancelled", self.transfer_id)
 
     def _do_pause(self) -> None:
+        # Guarded on in_progress: if the transfer was already re-queued by a
+        # quick resume, don't clobber that status
         self._db.execute(
-            "UPDATE transfers SET status = 'paused', updated_at = datetime('now') WHERE id = ?",
+            "UPDATE transfers SET status = 'paused', updated_at = datetime('now') "
+            "WHERE id = ? AND status = 'in_progress'",
             (self.transfer_id,),
         )
+        self.signals.stopped.emit(self.transfer_id)
         logger.info("Upload %d paused", self.transfer_id)
 
     def _get_transferred(self) -> int:

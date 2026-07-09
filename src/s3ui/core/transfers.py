@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime
 import logging
 import threading
+import weakref
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QObject, QThreadPool, pyqtSignal
@@ -18,6 +20,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("s3ui.transfers")
 
+# Per-database registry of transfer IDs with a live worker in ANY engine.
+# Guards against duplicate workers writing to the same file when an engine is
+# replaced (bucket/profile switch) or a transfer is resumed before its paused
+# worker has exited. Transfer IDs are only unique within one database.
+_LIVE_TRANSFERS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_LIVE_LOCK = threading.Lock()
+
+
+def _live_transfers(db: Database) -> set[int]:
+    """Return the shared live-transfer set for a database."""
+    with _LIVE_LOCK:
+        live = _LIVE_TRANSFERS.get(db)
+        if live is None:
+            live = set()
+            _LIVE_TRANSFERS[db] = live
+        return live
+
 
 class TransferEngine(QObject):
     """Manages the transfer queue and worker pool."""
@@ -27,6 +46,7 @@ class TransferEngine(QObject):
     transfer_status_changed = pyqtSignal(int, str)  # transfer_id, new_status
     transfer_error = pyqtSignal(int, str, str)  # transfer_id, user_msg, detail
     transfer_finished = pyqtSignal(int)  # transfer_id
+    drained = pyqtSignal()  # emitted after shutdown() once all workers have exited
 
     def __init__(
         self,
@@ -34,16 +54,15 @@ class TransferEngine(QObject):
         db: Database,
         bucket: str,
         max_workers: int = 4,
+        profile: str | None = None,
     ) -> None:
         super().__init__()
         self._s3 = s3_client
         self._db = db
         self._bucket = bucket
-        row = self._db.fetchone(
-            "SELECT id FROM buckets WHERE name = ? ORDER BY id DESC LIMIT 1",
-            (bucket,),
-        )
-        self._bucket_id = row["id"] if row else None
+        self._profile = profile
+        self._bucket_id = None
+        self._resolve_bucket_id()
         self._pool = QThreadPool()
         self._pool.setMaxThreadCount(max_workers)
 
@@ -51,14 +70,27 @@ class TransferEngine(QObject):
         self._pause_events: dict[int, threading.Event] = {}
         self._cancel_events: dict[int, threading.Event] = {}
         self._active: set[int] = set()
+        self._live = _live_transfers(db)
         self._paused_global = False
+        self._shutdown = False
 
     def enqueue(self, transfer_id: int) -> None:
         """Submit a transfer to the worker pool."""
+        if self._shutdown:
+            return
         row = self._db.fetchone("SELECT * FROM transfers WHERE id = ?", (transfer_id,))
         if not row:
             logger.warning("Cannot enqueue transfer %d: not found", transfer_id)
             return
+
+        with _LIVE_LOCK:
+            if transfer_id in self._live:
+                logger.info(
+                    "Transfer %d already has a live worker; not starting another",
+                    transfer_id,
+                )
+                return
+            self._live.add(transfer_id)
 
         pause_evt = threading.Event()
         cancel_evt = threading.Event()
@@ -90,6 +122,7 @@ class TransferEngine(QObject):
         worker.signals.speed.connect(self._on_speed)
         worker.signals.finished.connect(self._on_finished)
         worker.signals.failed.connect(self._on_failed)
+        worker.signals.stopped.connect(self._on_stopped)
 
         self._pool.start(worker)
         self.transfer_status_changed.emit(transfer_id, "in_progress")
@@ -115,7 +148,19 @@ class TransferEngine(QObject):
         evt = self._cancel_events.get(transfer_id)
         if evt:
             evt.set()
+        else:
+            # No live worker (queued/paused) — mark the row directly so
+            # restore_pending doesn't resurrect it later
+            self._db.execute(
+                "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') "
+                "WHERE id = ? AND status IN ('queued', 'paused')",
+                (transfer_id,),
+            )
         self.transfer_status_changed.emit(transfer_id, "cancelled")
+
+    def owns(self, transfer_id: int) -> bool:
+        """True if this engine has a live worker for the transfer."""
+        return transfer_id in self._active
 
     def pause_all(self) -> None:
         """Pause all active transfers."""
@@ -144,13 +189,19 @@ class TransferEngine(QObject):
         self.enqueue(transfer_id)
 
     def restore_pending(self) -> None:
-        """Restore transfers that were interrupted by an app shutdown."""
+        """Restore this bucket's transfers that were interrupted by an app shutdown."""
+        if self._resolve_bucket_id() is None:
+            return
         rows = self._db.fetchall(
             "SELECT id, direction, local_path, status FROM transfers "
-            "WHERE status IN ('queued', 'in_progress', 'paused')"
+            "WHERE status IN ('queued', 'in_progress', 'paused') AND bucket_id = ?",
+            (self._bucket_id,),
         )
+        with _LIVE_LOCK:
+            live = set(self._live)
         for row in rows:
-            from pathlib import Path
+            if row["id"] in live:
+                continue  # A previous engine's worker is still running it
 
             local = Path(row["local_path"])
 
@@ -203,25 +254,62 @@ class TransferEngine(QObject):
         self.transfer_error.emit(transfer_id, user_msg, detail)
         self._pick_next()
 
+    def _on_stopped(self, transfer_id: int) -> None:
+        """Worker exited due to pause or cancel — free its slot."""
+        self._cleanup(transfer_id)
+        self._pick_next()
+
     def _cleanup(self, transfer_id: int) -> None:
         self._active.discard(transfer_id)
         self._pause_events.pop(transfer_id, None)
         self._cancel_events.pop(transfer_id, None)
+        with _LIVE_LOCK:
+            self._live.discard(transfer_id)
+        if self._shutdown and not self._active:
+            self.drained.emit()
+
+    def shutdown(self) -> None:
+        """Stop accepting new work; running transfers finish naturally.
+
+        In-flight workers keep their pause/cancel events here (route control
+        via owns()), and `drained` is emitted once the last one exits.
+        """
+        self._shutdown = True
+        self._paused_global = True
+        if not self._active:
+            self.drained.emit()
+
+    def _resolve_bucket_id(self) -> int | None:
+        """Return the bucket's DB id, re-querying if it wasn't created yet.
+
+        Scoped by profile when one is given — same-named buckets under
+        different profiles/endpoints are distinct namespaces and must not
+        adopt each other's transfers.
+        """
+        if self._bucket_id is None:
+            if self._profile is not None:
+                row = self._db.fetchone(
+                    "SELECT id FROM buckets WHERE name = ? AND profile = ? "
+                    "ORDER BY id DESC LIMIT 1",
+                    (self._bucket, self._profile),
+                )
+            else:
+                row = self._db.fetchone(
+                    "SELECT id FROM buckets WHERE name = ? ORDER BY id DESC LIMIT 1",
+                    (self._bucket,),
+                )
+            self._bucket_id = row["id"] if row else None
+        return self._bucket_id
 
     def _pick_next(self) -> None:
-        """Start the next queued transfer if a slot is available."""
-        if self._paused_global:
+        """Start the next queued transfer for this bucket if a slot is available."""
+        if self._paused_global or self._resolve_bucket_id() is None:
             return
-        if self._bucket_id is None:
-            row = self._db.fetchone(
-                "SELECT id FROM transfers WHERE status = 'queued' ORDER BY created_at ASC LIMIT 1"
-            )
-        else:
-            row = self._db.fetchone(
-                "SELECT id FROM transfers WHERE status = 'queued' AND bucket_id = ? "
-                "ORDER BY created_at ASC LIMIT 1",
-                (self._bucket_id,),
-            )
+        row = self._db.fetchone(
+            "SELECT id FROM transfers WHERE status = 'queued' AND bucket_id = ? "
+            "ORDER BY created_at ASC LIMIT 1",
+            (self._bucket_id,),
+        )
         if row and row["id"] not in self._active:
             self.enqueue(row["id"])
 

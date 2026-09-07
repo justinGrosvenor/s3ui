@@ -129,7 +129,7 @@ class TestSafeRevalidate:
         assert names == {"3", "4"}
         assert entry.dirty is False
 
-    def test_with_mutations_merges(self):
+    def test_with_mutations_preserves_current_listing(self):
         cache = ListingCache()
         cache.put("a/", [_item("1"), _item("2")])
         counter = cache.get_mutation_counter("a/")
@@ -146,7 +146,8 @@ class TestSafeRevalidate:
         names = {i.name for i in entry.items}
         # Should have server items + optimistic item
         assert "1" in names
-        assert "3" in names
+        assert "2" in names
+        assert "3" not in names
         assert "optimistic" in names
         assert entry.dirty is True  # still dirty because optimistic items exist
 

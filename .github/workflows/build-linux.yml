@@ -3,10 +3,16 @@ name: Build Linux AppImage
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: build-linux-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('candidate-{0}', github.run_number) }}
 
 jobs:
   build-linux:
@@ -39,7 +45,7 @@ jobs:
         env:
           # Let appimagetool run without FUSE on the runner
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: bash build/scripts/make-appimage.sh "${GITHUB_REF_NAME}"
+        run: bash build/scripts/make-appimage.sh "${BUILD_VERSION}"
 
       - name: Upload AppImage artifact
         uses: actions/upload-artifact@v4
@@ -48,6 +54,7 @@ jobs:
           path: S3UI-*.AppImage
 
       - name: Attach AppImage to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: S3UI-*.AppImage

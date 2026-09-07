@@ -11,6 +11,8 @@ from s3ui.core.errors import translate_error
 from s3ui.models.s3_objects import S3Item
 
 if TYPE_CHECKING:
+    from s3transfer.utils import ReadFileChunk
+
     from s3ui.core.cost import CostTracker
     from s3ui.core.credentials import Profile
 
@@ -20,10 +22,11 @@ logger = logging.getLogger("s3ui.s3_client")
 class S3ClientError(Exception):
     """Wraps an S3 error with user-facing message and raw detail."""
 
-    def __init__(self, user_message: str, detail: str) -> None:
+    def __init__(self, user_message: str, detail: str, code: str | None = None) -> None:
         super().__init__(user_message)
         self.user_message = user_message
         self.detail = detail
+        self.code = code
 
 
 class S3Client:
@@ -79,7 +82,9 @@ class S3Client:
     def _handle_error(self, exc: Exception, operation: str) -> None:
         user_msg, detail = translate_error(exc)
         logger.error("S3 operation '%s' failed: %s", operation, detail)
-        raise S3ClientError(user_msg, detail) from exc
+        response = getattr(exc, "response", {})
+        code = response.get("Error", {}).get("Code")
+        raise S3ClientError(user_msg, detail, code=code) from exc
 
     # --- Bucket operations ---
 
@@ -180,7 +185,9 @@ class S3Client:
         except Exception as e:
             self._handle_error(e, "put_object")
 
-    def get_object(self, bucket: str, key: str, range_header: str | None = None):
+    def get_object(
+        self, bucket: str, key: str, range_header: str | None = None, *, etag: str | None = None
+    ):
         """Download an object (or a byte range). Returns the streaming body."""
         try:
             logger.debug("get_object bucket=%s key='%s' range=%s", bucket, key, range_header)
@@ -188,6 +195,8 @@ class S3Client:
             kwargs = {"Bucket": bucket, "Key": key}
             if range_header:
                 kwargs["Range"] = range_header
+            if etag:
+                kwargs["IfMatch"] = etag
             return self._client.get_object(**kwargs)["Body"]
         except Exception as e:
             self._handle_error(e, "get_object")
@@ -249,11 +258,33 @@ class S3Client:
         try:
             logger.debug("copy_object %s/%s -> %s/%s", src_bucket, src_key, dst_bucket, dst_key)
             self._record("copy")
-            self._client.copy_object(
+            self._record("head")
+            metadata = self._client.head_object(Bucket=src_bucket, Key=src_key)
+            # Multipart copy creates a new upload; MetadataDirective alone does
+            # not carry the source's metadata into that upload.
+            extra = {
+                field: metadata[field]
+                for field in (
+                    "Metadata",
+                    "CacheControl",
+                    "ContentDisposition",
+                    "ContentEncoding",
+                    "ContentLanguage",
+                    "ContentType",
+                    "Expires",
+                    "WebsiteRedirectLocation",
+                )
+                if field in metadata
+            }
+            extra["MetadataDirective"] = "COPY"
+            if metadata.get("ETag"):
+                extra["CopySourceIfMatch"] = metadata["ETag"]
+            # Managed copy handles large objects with multipart UploadPartCopy.
+            self._client.copy(
                 Bucket=dst_bucket,
                 Key=dst_key,
                 CopySource={"Bucket": src_bucket, "Key": src_key},
-                MetadataDirective="COPY",
+                ExtraArgs=extra,
             )
         except Exception as e:
             self._handle_error(e, "copy_object")
@@ -273,7 +304,7 @@ class S3Client:
             self._handle_error(e, "create_multipart_upload")
 
     def upload_part(
-        self, bucket: str, key: str, upload_id: str, part_number: int, body: bytes
+        self, bucket: str, key: str, upload_id: str, part_number: int, body: bytes | ReadFileChunk
     ) -> str:
         """Upload a single part. Returns the ETag."""
         try:

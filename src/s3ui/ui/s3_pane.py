@@ -96,6 +96,7 @@ class S3PaneWidget(QWidget):
         self._history_forward: list[str] = []
         self._fetch_id: int = 0
         self._fetch_worker: _FetchWorker | None = None
+        self._fetch_workers: list[_FetchWorker] = []
         self._cache = ListingCache()
         self._connected = False
         self._operation_locks: dict[str, str] = {}
@@ -215,15 +216,34 @@ class S3PaneWidget(QWidget):
 
     def set_client(self, s3_client: S3Client) -> None:
         """Set the S3 client to use for fetching."""
+        self.clear_connection()
         self._s3_client = s3_client
         self._connected = True
         self._placeholder.setVisible(False)
         self._table.setVisible(True)
 
+    def clear_connection(self) -> None:
+        """Invalidate every result and selection from the previous namespace."""
+        self._fetch_id += 1
+        self._s3_client = None
+        self._bucket = ""
+        self._current_prefix = ""
+        self._cache.invalidate_all()
+        self._model.clear()
+        self._connected = False
+        self._table.setVisible(False)
+        self._placeholder.setVisible(True)
+        self._status_label.setVisible(False)
+        self._history_back.clear()
+        self._history_forward.clear()
+        self._update_breadcrumb()
+        self._update_nav_buttons()
+
     def set_bucket(self, bucket_name: str) -> None:
         """Switch to a different bucket."""
         self._bucket = bucket_name
         self._cache.invalidate_all()
+        self._current_prefix = ""
         self._history_back.clear()
         self._history_forward.clear()
         self.navigate_to("")
@@ -232,6 +252,9 @@ class S3PaneWidget(QWidget):
         """Navigate to an S3 prefix."""
         if not self._s3_client or not self._bucket:
             return
+
+        # Even a cache hit supersedes the fetch for the previously viewed folder.
+        self._fetch_id += 1
 
         if record_history and self._current_prefix != prefix:
             self._history_back.append(self._current_prefix)
@@ -300,12 +323,24 @@ class S3PaneWidget(QWidget):
     def notify_upload_complete(self, key: str, size: int) -> None:
         """Optimistic: insert uploaded object into current listing."""
         prefix = self._current_prefix
+        if not key.startswith(prefix):
+            self._cache.invalidate(key.rpartition("/")[0] + "/")
+            return
         name = key[len(prefix) :] if prefix else key
         if "/" in name:
-            return  # Not in current directory level
+            folder = name.split("/", 1)[0]
+            self.notify_new_folder(prefix + folder + "/", folder)
+            self._cache.invalidate(key.rpartition("/")[0] + "/")
+            return
         item = S3Item(name=name, key=key, is_prefix=False, size=size)
+        self._model.remove_items({key})
         self._model.insert_item(item)
-        self._cache.apply_mutation(prefix, lambda items: items.append(item))
+
+        def upsert(items):
+            items[:] = [i for i in items if i.key != key]
+            items.append(item)
+
+        self._cache.apply_mutation(prefix, upsert)
         self._update_footer()
 
     def notify_delete_complete(self, keys: list[str]) -> None:
@@ -328,6 +363,12 @@ class S3PaneWidget(QWidget):
 
     def notify_new_folder(self, key: str, name: str) -> None:
         """Optimistic: insert a new prefix (folder)."""
+        prefix = self._current_prefix
+        if not key.startswith(prefix) or "/" in key[len(prefix) :].rstrip("/"):
+            self._cache.invalidate_all()
+            return
+        if any(self._model.get_item(i).key == key for i in range(self._model.item_count())):
+            return
         item = S3Item(name=name, key=key, is_prefix=True)
         self._model.insert_item(item)
         self._cache.apply_mutation(self._current_prefix, lambda items: items.append(item))
@@ -367,15 +408,21 @@ class S3PaneWidget(QWidget):
             worker.signals.listing_complete.connect(self._on_listing_complete)
 
         worker.signals.error.connect(self._on_fetch_error)
-        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda w=worker: self._discard_fetch(w))
         self._fetch_worker = worker
+        self._fetch_workers.append(worker)
         worker.start()
+
+    def _discard_fetch(self, worker: _FetchWorker) -> None:
+        if worker in self._fetch_workers:
+            self._fetch_workers.remove(worker)
+        if self._fetch_worker is worker:
+            self._fetch_worker = None
+        worker.deleteLater()
 
     def _on_listing_complete(self, prefix: str, items: list[S3Item], fetch_id: int) -> None:
         """Handle completion of a fresh fetch."""
-        if fetch_id != self._fetch_id:
-            # Stale fetch — cache the result but don't update UI
-            self._cache.put(prefix, items)
+        if fetch_id != self._fetch_id or prefix != self._current_prefix:
             return
 
         self._cache.put(prefix, items)
@@ -388,10 +435,10 @@ class S3PaneWidget(QWidget):
         self, prefix: str, items: list[S3Item], fetch_id: int, counter: int
     ) -> None:
         """Handle completion of a background revalidation."""
-        self._cache.safe_revalidate(prefix, items, counter)
-
         if fetch_id != self._fetch_id:
             return  # User navigated away
+
+        self._cache.safe_revalidate(prefix, items, counter)
 
         if prefix == self._current_prefix:
             cached = self._cache.get(prefix)

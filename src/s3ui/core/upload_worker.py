@@ -10,6 +10,7 @@ import time
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QObject, QRunnable, pyqtSignal
+from s3transfer.utils import ReadFileChunk
 
 from s3ui.constants import (
     DEFAULT_PART_SIZE,
@@ -18,6 +19,7 @@ from s3ui.constants import (
     MAX_RETRY_ATTEMPTS,
     MULTIPART_THRESHOLD,
 )
+from s3ui.core.s3_client import S3ClientError
 
 if TYPE_CHECKING:
     from s3ui.core.s3_client import S3Client
@@ -33,7 +35,12 @@ def select_part_size(file_size: int) -> int:
     elif file_size <= 500 * 1024**3:  # ≤500 GB
         return LARGE_PART_SIZE
     else:
-        return HUGE_PART_SIZE
+        # Round up to MiB while accommodating the full 10,000-part ceiling.
+        mib = 1024**2
+        size = max(HUGE_PART_SIZE, math.ceil(file_size / (10_000 * mib)) * mib)
+        if size > 5 * 1024**3:
+            raise ValueError("File exceeds the supported multipart upload size.")
+        return size
 
 
 class UploadWorkerSignals(QObject):
@@ -91,8 +98,11 @@ class UploadWorker(QRunnable):
 
         from pathlib import Path
 
+        object_key = row["object_key"]
+        if self._check_control(object_key, row["upload_id"]):
+            return
         local_path = Path(row["local_path"])
-        if not local_path.exists():
+        if not local_path.is_file():
             self._mark_failed("Source file no longer exists.")
             self.signals.failed.emit(
                 self.transfer_id,
@@ -101,15 +111,22 @@ class UploadWorker(QRunnable):
             )
             return
 
-        object_key = row["object_key"]
-        file_size = local_path.stat().st_size
+        stat = local_path.stat()
+        file_size = stat.st_size
+        self._source_identity = (file_size, stat.st_mtime_ns)
+        upload_id = row["upload_id"]
+        if upload_id and (
+            row["source_mtime_ns"] != stat.st_mtime_ns or row["total_bytes"] != file_size
+        ):
+            # A changed or legacy source cannot safely reuse already uploaded bytes.
+            self._s3.abort_multipart_upload(self._bucket, object_key, upload_id)
+            self._reset_multipart()
+            upload_id = None
 
-        # Update total_bytes if not set
-        if row["total_bytes"] is None or row["total_bytes"] != file_size:
-            self._db.execute(
-                "UPDATE transfers SET total_bytes = ? WHERE id = ?",
-                (file_size, self.transfer_id),
-            )
+        self._db.execute(
+            "UPDATE transfers SET total_bytes = ?, source_mtime_ns = ? WHERE id = ?",
+            (file_size, stat.st_mtime_ns, self.transfer_id),
+        )
 
         self._db.execute(
             "UPDATE transfers SET status = 'in_progress', updated_at = datetime('now') "
@@ -120,100 +137,142 @@ class UploadWorker(QRunnable):
         if file_size < MULTIPART_THRESHOLD:
             self._single_upload(local_path, object_key, file_size)
         else:
-            self._multipart_upload(local_path, object_key, file_size, row)
+            self._multipart_upload(local_path, object_key, file_size, upload_id)
 
     def _single_upload(self, local_path, object_key: str, file_size: int) -> None:
         data = local_path.read_bytes()
+        self._validate_source(local_path)
+        if self._check_control(object_key):
+            return
         self._s3.put_object(self._bucket, object_key, data)
         self._complete(file_size)
 
-    def _multipart_upload(self, local_path, object_key: str, file_size: int, row) -> None:
+    def _reset_multipart(self) -> None:
+        self._db.execute(
+            "UPDATE transfers SET upload_id = NULL, transferred = 0 WHERE id = ?",
+            (self.transfer_id,),
+        )
+        self._db.execute("DELETE FROM transfer_parts WHERE transfer_id = ?", (self.transfer_id,))
+
+    def _validate_source(self, local_path) -> None:
+        stat = local_path.stat()
+        if (stat.st_size, stat.st_mtime_ns) != self._source_identity:
+            raise RuntimeError("Source file changed during upload. Retry to upload the new file.")
+
+    def _check_control(self, key: str, upload_id: str | None = None) -> bool:
+        if self._cancel.is_set():
+            self._do_cancel(key, upload_id)
+            return True
+        if self._pause.is_set():
+            self._do_pause()
+            return True
+        return False
+
+    def _multipart_upload(self, local_path, object_key: str, file_size: int, upload_id) -> None:
         part_size = select_part_size(file_size)
         num_parts = math.ceil(file_size / part_size)
-        upload_id = row["upload_id"]
-
-        # Initiate or resume
+        s3_parts = []
+        if upload_id:
+            try:
+                s3_parts = self._s3.list_parts(self._bucket, object_key, upload_id)
+            except S3ClientError as exc:
+                if exc.code != "NoSuchUpload":
+                    raise
+                # The server expired/aborted the session. Start a fresh one.
+                self._reset_multipart()
+                upload_id = None
         if not upload_id:
             upload_id = self._s3.create_multipart_upload(self._bucket, object_key)
             self._db.execute(
                 "UPDATE transfers SET upload_id = ? WHERE id = ?",
                 (upload_id, self.transfer_id),
             )
-            # Create part records
-            for i in range(num_parts):
-                offset = i * part_size
-                size = min(part_size, file_size - offset)
-                self._db.execute(
-                    "INSERT OR IGNORE INTO transfer_parts "
-                    "(transfer_id, part_number, offset, size) VALUES (?, ?, ?, ?)",
-                    (self.transfer_id, i + 1, offset, size),
-                )
-        else:
-            # Resuming: reconcile with S3, keeping the ETags S3 reports so
-            # complete_multipart_upload gets one for every part
-            s3_parts = self._s3.list_parts(self._bucket, object_key, upload_id)
-            for p in s3_parts:
-                self._db.execute(
-                    "UPDATE transfer_parts SET status = 'completed', etag = ? "
-                    "WHERE transfer_id = ? AND part_number = ?",
-                    (p["ETag"], self.transfer_id, p["PartNumber"]),
-                )
 
-        # Upload pending parts
+        # Rebuild every expected part, even if the previous process stopped
+        # between saving the upload ID and creating all the local part rows.
+        # S3 is authoritative: absent or wrong-sized remote parts are reuploaded.
+        remote = {part["PartNumber"]: part for part in s3_parts}
+        records = []
+        for i in range(num_parts):
+            offset = i * part_size
+            size = min(part_size, file_size - offset)
+            part = remote.get(i + 1)
+            etag = part["ETag"] if part and part["Size"] == size else None
+            records.append(
+                (self.transfer_id, i + 1, offset, size, etag, "completed" if etag else "pending")
+            )
+        self._db.executemany(
+            "INSERT INTO transfer_parts (transfer_id, part_number, offset, size, etag, status) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(transfer_id, part_number) DO UPDATE SET "
+            "offset = excluded.offset, size = excluded.size, etag = excluded.etag, "
+            "status = excluded.status",
+            records,
+        )
+        self._db.execute(
+            "DELETE FROM transfer_parts WHERE transfer_id = ? AND part_number > ?",
+            (self.transfer_id, num_parts),
+        )
         pending = self._db.fetchall(
             "SELECT * FROM transfer_parts WHERE transfer_id = ? AND status != 'completed' "
             "ORDER BY part_number",
             (self.transfer_id,),
         )
-
         bytes_done = self._get_transferred()
-        parts_for_complete = self._get_completed_parts()
+        self._db.execute(
+            "UPDATE transfers SET transferred = ? WHERE id = ?", (bytes_done, self.transfer_id)
+        )
+        self.signals.progress.emit(self.transfer_id, bytes_done, file_size)
 
-        with open(local_path, "rb") as f:
-            for part_row in pending:
-                if self._cancel.is_set():
-                    self._do_cancel(object_key, upload_id)
-                    return
-                if self._pause.is_set():
-                    self._do_pause()
-                    return
-
-                part_num = part_row["part_number"]
-                offset = part_row["offset"]
-                size = part_row["size"]
-
-                f.seek(offset)
-                data = f.read(size)
+        for part_row in pending:
+            if self._check_control(object_key, upload_id):
+                return
+            self._validate_source(local_path)
+            part_num = part_row["part_number"]
+            size = part_row["size"]
+            # Stream the bounded part through botocore instead of allocating
+            # up to several GiB per worker for large source files.
+            with ReadFileChunk.from_filename(local_path, part_row["offset"], size) as data:
+                if len(data) != size:
+                    raise RuntimeError("Source file was truncated during upload.")
                 etag = self._upload_part_with_retry(object_key, upload_id, part_num, data)
-                if etag is None:
-                    return  # failed signal already emitted
+            if etag is None:
+                return
+            bytes_done += size
+            self._db.execute_batch(
+                [
+                    (
+                        "UPDATE transfer_parts SET status = 'completed', etag = ? "
+                        "WHERE transfer_id = ? AND part_number = ?",
+                        (etag, self.transfer_id, part_num),
+                    ),
+                    (
+                        "UPDATE transfers SET transferred = ?, updated_at = datetime('now') "
+                        "WHERE id = ?",
+                        (bytes_done, self.transfer_id),
+                    ),
+                ]
+            )
+            self.signals.progress.emit(self.transfer_id, bytes_done, file_size)
+            self._update_speed(size)
 
-                self._db.execute(
-                    "UPDATE transfer_parts SET status = 'completed', etag = ? "
-                    "WHERE transfer_id = ? AND part_number = ?",
-                    (etag, self.transfer_id, part_num),
-                )
-
-                bytes_done += size
-                self._db.execute(
-                    "UPDATE transfers SET transferred = ?, updated_at = datetime('now') "
-                    "WHERE id = ?",
-                    (bytes_done, self.transfer_id),
-                )
-                self.signals.progress.emit(self.transfer_id, bytes_done, file_size)
-                self._update_speed(size)
-                parts_for_complete.append({"ETag": etag, "PartNumber": part_num})
-
-        # Complete
-        all_parts = sorted(self._get_all_completed_parts(), key=lambda p: p["PartNumber"])
+        # A stop request during the last part must not publish the object.
+        if self._check_control(object_key, upload_id):
+            return
+        self._validate_source(local_path)
+        all_parts = sorted(self._get_completed_parts(), key=lambda p: p["PartNumber"])
+        if len(all_parts) != num_parts or self._get_transferred() != file_size:
+            raise RuntimeError("Multipart upload is incomplete; retry to reconcile its parts.")
         self._s3.complete_multipart_upload(self._bucket, object_key, upload_id, all_parts)
         self._complete(file_size)
 
     def _upload_part_with_retry(
-        self, key: str, upload_id: str, part_num: int, data: bytes
+        self, key: str, upload_id: str, part_num: int, data: ReadFileChunk
     ) -> str | None:
         for attempt in range(MAX_RETRY_ATTEMPTS):
+            if self._check_control(key, upload_id):
+                return None
             try:
+                data.seek(0)
                 return self._s3.upload_part(self._bucket, key, upload_id, part_num, data)
             except Exception as e:
                 if attempt < MAX_RETRY_ATTEMPTS - 1:
@@ -225,7 +284,7 @@ class UploadWorker(QRunnable):
                         delay,
                         e,
                     )
-                    time.sleep(delay)
+                    self._cancel.wait(delay)
                 else:
                     self._mark_failed(str(e))
                     self.signals.failed.emit(
@@ -237,7 +296,7 @@ class UploadWorker(QRunnable):
 
     def _complete(self, total: int) -> None:
         self._db.execute(
-            "UPDATE transfers SET status = 'completed', transferred = ?, "
+            "UPDATE transfers SET status = 'completed', transferred = ?, upload_id = NULL, "
             "updated_at = datetime('now') WHERE id = ?",
             (total, self.transfer_id),
         )
@@ -252,11 +311,14 @@ class UploadWorker(QRunnable):
             (msg, self.transfer_id),
         )
 
-    def _do_cancel(self, key: str, upload_id: str) -> None:
-        import contextlib
-
-        with contextlib.suppress(Exception):
-            self._s3.abort_multipart_upload(self._bucket, key, upload_id)
+    def _do_cancel(self, key: str, upload_id: str | None) -> None:
+        if upload_id:
+            try:
+                self._s3.abort_multipart_upload(self._bucket, key, upload_id)
+            except Exception:
+                logger.warning("Could not abort upload %s; retained for later cleanup", upload_id)
+            else:
+                self._reset_multipart()
         self._db.execute(
             "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') WHERE id = ?",
             (self.transfer_id,),
@@ -265,11 +327,9 @@ class UploadWorker(QRunnable):
         logger.info("Upload %d cancelled", self.transfer_id)
 
     def _do_pause(self) -> None:
-        # Guarded on in_progress: if the transfer was already re-queued by a
-        # quick resume, don't clobber that status
         self._db.execute(
             "UPDATE transfers SET status = 'paused', updated_at = datetime('now') "
-            "WHERE id = ? AND status = 'in_progress'",
+            "WHERE id = ? AND status IN ('queued', 'in_progress', 'paused')",
             (self.transfer_id,),
         )
         self.signals.stopped.emit(self.transfer_id)
@@ -290,9 +350,6 @@ class UploadWorker(QRunnable):
             (self.transfer_id,),
         )
         return [{"ETag": r["etag"], "PartNumber": r["part_number"]} for r in rows]
-
-    def _get_all_completed_parts(self) -> list[dict]:
-        return self._get_completed_parts()
 
     def _update_speed(self, chunk_bytes: int) -> None:
         now = time.monotonic()

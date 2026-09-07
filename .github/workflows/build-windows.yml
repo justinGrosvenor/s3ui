@@ -3,10 +3,16 @@ name: Build Windows Installer
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: build-windows-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('candidate-{0}', github.run_number) }}
 
 jobs:
   # Icon conversion needs rsvg-convert, which is painful on Windows —
@@ -60,7 +66,8 @@ jobs:
         run: |
           # Run from the repo root so the script's dist\S3UI path resolves
           Copy-Item build\installer.nsi .
-          makensis /DVERSION=$env:GITHUB_REF_NAME installer.nsi
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" /DVERSION=$env:BUILD_VERSION installer.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
@@ -69,6 +76,7 @@ jobs:
           path: S3UI-Setup-*.exe
 
       - name: Attach installer to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: S3UI-Setup-*.exe

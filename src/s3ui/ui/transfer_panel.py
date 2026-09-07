@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
@@ -38,9 +38,15 @@ class TransferPanelWidget(QWidget):
         super().__init__(parent)
         self._db = db
         self._engine: TransferEngine | None = None
+        self._wired_engines: set = set()
         self._paused_global = False
 
         self._setup_ui()
+        self._header_timer = QTimer(self)
+        self._header_timer.setSingleShot(True)
+        self._header_timer.setInterval(100)
+        self._header_timer.timeout.connect(self._update_header)
+        self._model.counts_changed.connect(self._schedule_header_update)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -86,6 +92,11 @@ class TransferPanelWidget(QWidget):
     def set_engine(self, engine: TransferEngine) -> None:
         """Wire the transfer engine signals to the model."""
         self._engine = engine
+        if self._paused_global:
+            engine.pause_all()
+        if engine in self._wired_engines:
+            return
+        self._wired_engines.add(engine)
         engine.transfer_progress.connect(self._model.on_progress)
         engine.transfer_speed.connect(self._model.on_speed)
         engine.transfer_status_changed.connect(self._model.on_status_changed)
@@ -95,7 +106,10 @@ class TransferPanelWidget(QWidget):
     def add_transfer(self, transfer_id: int) -> None:
         """Add a transfer to the panel."""
         self._model.add_transfer(transfer_id)
-        self._update_header()
+
+    def _schedule_header_update(self) -> None:
+        if not self._header_timer.isActive():
+            self._header_timer.start()
 
     def _update_header(self) -> None:
         active = self._model.active_count()
@@ -114,11 +128,13 @@ class TransferPanelWidget(QWidget):
         if not self._engine:
             return
         if self._paused_global:
-            self._engine.resume_all()
+            for engine in self._wired_engines:
+                engine.resume_all()
             self._pause_all_btn.setText("Pause All")
             self._paused_global = False
         else:
-            self._engine.pause_all()
+            for engine in self._wired_engines:
+                engine.pause_all()
             self._pause_all_btn.setText("Resume All")
             self._paused_global = True
 

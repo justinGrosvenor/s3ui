@@ -1,0 +1,29 @@
+{
+  "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+  "python": "3.14.0",
+  "multipart_prepare": {
+    "parts": 10000,
+    "before": {
+      "seconds": 0.5252,
+      "peak_mib": 0.54,
+      "commits": 10000
+    },
+    "after": {
+      "seconds": 0.0294,
+      "peak_mib": 1.45,
+      "commits": 1
+    }
+  },
+  "part_buffering": {
+    "part_mib": 64,
+    "before": {
+      "seconds": 0.0278,
+      "peak_mib": 64.0
+    },
+    "after": {
+      "seconds": 0.0257,
+      "peak_mib": 2.13
+    },
+    "bytes_match": true
+  }
+}

@@ -2,7 +2,6 @@
 
 import logging
 import sys
-import threading
 
 from PyQt6.QtCore import QByteArray, QObject, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QDesktopServices, QKeySequence
@@ -68,7 +67,7 @@ class _ConnectWorker(QThread):
         try:
             buckets = client.list_buckets()
         except S3ClientError as e:
-            if "AccessDenied" in e.detail:
+            if e.code == "AccessDenied" or "AccessDenied" in e.detail:
                 # Bucket-scoped credentials (common with R2 tokens and
                 # least-privilege IAM policies) can't list buckets — still
                 # connected, the user just has to name the bucket
@@ -161,8 +160,10 @@ class _QuickOpenWorker(QThread):
 
     def run(self) -> None:
         try:
-            body = self._s3.get_object(self._bucket, self._key)
-            data = body.read()
+            from contextlib import closing
+
+            with closing(self._s3.get_object(self._bucket, self._key)) as body:
+                data = body.read()
             self._dest.parent.mkdir(parents=True, exist_ok=True)
             self._dest.write_bytes(data)
             self.signals.finished.emit(str(self._dest))
@@ -195,7 +196,7 @@ class _EnumerateWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, db=None) -> None:
+    def __init__(self, db=None, *, auto_connect: bool = True) -> None:
         super().__init__()
         self._db = db
         self._transfer_engine = None
@@ -208,9 +209,10 @@ class MainWindow(QMainWindow):
         self._wizard: SetupWizard | None = None
         self._bg_workers: list[QThread] = []
         self._s3_clipboard: tuple[str, list] | None = None  # (bucket, [S3Item files])
-        self._orphan_cleaned_buckets: set[str] = set()
+        self._orphan_cleaned_buckets: set[int] = set()
         self._cost_tracker: CostTracker | None = None
         self._aws_profile_names: set[str] = set()
+        self._closing = False
 
         self.setWindowTitle("S3UI")
         self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
@@ -251,7 +253,11 @@ class MainWindow(QMainWindow):
         logger.info("Main window initialized")
 
         # Discover profiles and connect after event loop starts
-        QTimer.singleShot(0, self._init_connection)
+        self._connect_timer = QTimer(self)
+        self._connect_timer.setSingleShot(True)
+        self._connect_timer.timeout.connect(self._init_connection)
+        if auto_connect:
+            self._connect_timer.start(0)
 
     # --- Toolbar ---
 
@@ -367,6 +373,11 @@ class MainWindow(QMainWindow):
         # The clipboard's source bucket belongs to the old profile's namespace
         self._s3_clipboard = None
         self._paste_action.setEnabled(False)
+        self._s3_client = None
+        self._s3_pane.clear_connection()
+        self._stats_action.setEnabled(False)
+        self._cost_action.setEnabled(False)
+        self._update_edit_actions([])
 
         worker = _ConnectWorker(profile, self)
         self._connect_worker = worker
@@ -388,7 +399,7 @@ class MainWindow(QMainWindow):
         self, client: S3Client, buckets: list[str], worker: _ConnectWorker | None = None
     ) -> None:
         """Handle successful connection — populate bucket combo."""
-        if worker is not None and worker is not self._connect_worker:
+        if self._closing or (worker is not None and worker is not self._connect_worker):
             return  # Stale result from a previously selected profile
 
         self._s3_client = client
@@ -487,7 +498,7 @@ class MainWindow(QMainWindow):
 
     def _on_connect_failed(self, error_message: str, worker: _ConnectWorker | None = None) -> None:
         """Handle connection failure."""
-        if worker is not None and worker is not self._connect_worker:
+        if self._closing or (worker is not None and worker is not self._connect_worker):
             return  # Stale result from a previously selected profile
         self.set_status(f"Connection failed: {error_message}")
         logger.warning("Connection failed: %s", error_message)
@@ -592,19 +603,33 @@ class MainWindow(QMainWindow):
             return
 
         profile_name = self._profile_combo.currentData() or ""
-        engine = TransferEngine(self._s3_client, self._db, bucket_name, profile=profile_name)
+        engine = next(
+            (
+                e
+                for e in [self._transfer_engine, *self._retired_engines]
+                if e is not None
+                and e._s3 is self._s3_client
+                and e._bucket == bucket_name
+                and e._profile == profile_name
+            ),
+            None,
+        )
+        if engine is None:
+            engine = TransferEngine(self._s3_client, self._db, bucket_name, profile=profile_name)
         self.set_transfer_engine(engine)
+        for row in self._db.fetchall(
+            "SELECT id FROM transfers WHERE bucket_id = ? "
+            "AND status IN ('queued', 'in_progress', 'paused', 'failed')",
+            (self._ensure_bucket_id(),),
+        ):
+            self._transfer_panel.add_transfer(row["id"])
         engine.restore_pending()
 
-        # Abort multipart uploads orphaned on S3 (>24h old, not in our DB) —
-        # they otherwise accumulate invisible storage costs forever
-        if bucket_name not in self._orphan_cleaned_buckets:
-            self._orphan_cleaned_buckets.add(bucket_name)
-            threading.Thread(
-                target=engine.cleanup_orphaned_uploads,
-                daemon=True,
-                name="s3ui-orphan-cleanup",
-            ).start()
+        # Retry failed aborts for this application's cancelled uploads only.
+        bucket_id = self._ensure_bucket_id()
+        if bucket_id not in self._orphan_cleaned_buckets:
+            self._orphan_cleaned_buckets.add(bucket_id)
+            self._run_key_op(engine.cleanup_orphaned_uploads, None, lambda _: None)
 
     def _ensure_bucket_id(self) -> int | None:
         """Get or create the bucket record in the database, return its ID."""
@@ -637,50 +662,30 @@ class MainWindow(QMainWindow):
         self._enqueue_uploads(paths)
 
     def _enqueue_uploads(self, paths: list[str]) -> None:
-        """Create transfer records and enqueue uploads."""
-        from pathlib import Path
+        """Discover sources and write the queue in batches outside the UI loop."""
+        from s3ui.core.upload_batch import UploadBatchWorker
 
-        if not self._transfer_engine or not self._db:
+        if not self._transfer_engine or not self._db or not self._s3_client:
             self.set_status("Not connected — cannot upload")
             return
-
         bucket_id = self._ensure_bucket_id()
         if bucket_id is None:
             self.set_status("No bucket selected")
             return
+        engine = self._transfer_engine
+        worker = UploadBatchWorker(self._db, bucket_id, self._s3_pane.current_prefix(), paths, self)
+        worker.batch_ready.connect(lambda ids: self._on_upload_batch(engine, ids))
+        worker.failed.connect(lambda msg: self.set_status(f"Upload discovery failed: {msg}"))
+        worker.finished.connect(lambda w=worker: self._discard_bg_worker(w))
+        self._bg_workers.append(worker)
+        self.set_status("Preparing uploads...")
+        worker.start()
 
-        prefix = self._s3_pane.current_prefix()
-        count = 0
-
-        for path_str in paths:
-            path = Path(path_str)
-            if path.is_dir():
-                for file_path in path.rglob("*"):
-                    if file_path.is_file():
-                        rel = file_path.relative_to(path.parent)
-                        key = prefix + str(rel).replace("\\", "/")
-                        self._create_upload_transfer(bucket_id, key, file_path)
-                        count += 1
-            elif path.is_file():
-                key = prefix + path.name
-                self._create_upload_transfer(bucket_id, key, path)
-                count += 1
-
-        if count:
-            self.set_status(f"Uploading {count} file(s)...")
-
-    def _create_upload_transfer(self, bucket_id: int, key: str, local_path) -> None:
-        """Insert a single upload transfer record and enqueue it."""
-        size = local_path.stat().st_size
-        tid = self._db.execute(
-            "INSERT INTO transfers "
-            "(bucket_id, object_key, direction, local_path, status, total_bytes, transferred) "
-            "VALUES (?, ?, 'upload', ?, 'queued', ?, 0)",
-            (bucket_id, key, str(local_path), size),
-        ).lastrowid
-
-        self._transfer_panel.add_transfer(tid)
-        self._transfer_engine.enqueue(tid)
+    def _on_upload_batch(self, engine, ids: list[int]) -> None:
+        for tid in ids:
+            self._transfer_panel.add_transfer(tid)
+            if not self._closing:
+                engine.enqueue(tid)
 
     def _on_download_requested(self, items: list) -> None:
         """Handle download request from S3 pane context menu."""
@@ -731,7 +736,9 @@ class MainWindow(QMainWindow):
         ).lastrowid
 
         self._transfer_panel.add_transfer(tid)
-        self._transfer_engine.enqueue(tid)
+        engine = self._engine_for(tid)
+        if engine:
+            engine.enqueue(tid)
 
     def _enqueue_folder_download(self, prefix: str, dest_dir, bucket_id: int) -> None:
         """Enumerate a folder in the background, then enqueue its files."""
@@ -753,7 +760,12 @@ class MainWindow(QMainWindow):
         self, prefix: str, files: list, dest_dir, bucket: str, bucket_id: int
     ) -> None:
         """Enqueue downloads for a folder's files, preserving its structure."""
-        if not self._transfer_engine or self._bucket_combo.currentData() != bucket:
+        if (
+            not self._transfer_engine
+            or self._bucket_combo.currentData() != bucket
+            or self._ensure_bucket_id() != bucket_id
+            or self._closing
+        ):
             self.set_status("Folder download cancelled — bucket changed")
             return
         if not files:
@@ -776,7 +788,11 @@ class MainWindow(QMainWindow):
                 if conflict_state.get("cancelled"):
                     break
                 continue
-            resolved.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.warning("Cannot create download directory %s: %s", resolved.parent, exc)
+                continue
             self._create_download_transfer(bucket_id, obj.key, resolved, obj.size or 0)
             count += 1
 
@@ -794,7 +810,13 @@ class MainWindow(QMainWindow):
             return None
         if sys.platform == "win32" and any("\\" in p or ":" in p for p in parts):
             return None
-        return dest_dir.joinpath(*parts)
+        path = dest_dir.joinpath(*parts)
+        try:
+            if not path.resolve().is_relative_to(dest_dir.resolve()):
+                return None
+        except (OSError, ValueError, RuntimeError):
+            return None
+        return path
 
     def _on_delete_requested(self, items: list) -> None:
         """Handle delete request from S3 pane context menu."""
@@ -832,7 +854,14 @@ class MainWindow(QMainWindow):
         self.set_status(f"Deleting {len(items)} item(s)...")
 
         worker = _DeleteWorker(self._s3_client, bucket, keys, prefixes, self)
-        worker.signals.finished.connect(self._on_delete_finished)
+        client = self._s3_client
+        worker.signals.finished.connect(
+            lambda deleted, failed: self._on_delete_finished(deleted, failed)
+            if not self._closing
+            and self._s3_client is client
+            and self._bucket_combo.currentData() == bucket
+            else None
+        )
         worker.signals.failed.connect(lambda msg: self.set_status(f"Delete failed: {msg}"))
         worker.finished.connect(lambda w=worker: self._discard_bg_worker(w))
         self._bg_workers.append(worker)
@@ -840,7 +869,15 @@ class MainWindow(QMainWindow):
 
     def _on_delete_finished(self, deleted_keys: list[str], failed_keys: list[str]) -> None:
         """Handle completed deletion — update S3 pane and status."""
-        self._s3_pane.notify_delete_complete(deleted_keys)
+        # A failed child means the folder still exists, even if its marker was deleted.
+        visible_deleted = [
+            key
+            for key in deleted_keys
+            if not (key.endswith("/") and any(failed.startswith(key) for failed in failed_keys))
+        ]
+        self._s3_pane.notify_delete_complete(visible_deleted)
+        self._s3_pane._cache.invalidate_all()
+        self._s3_pane.refresh()
         if failed_keys:
             self.set_status(f"Deleted {len(deleted_keys)} object(s) — {len(failed_keys)} failed")
         else:
@@ -864,13 +901,17 @@ class MainWindow(QMainWindow):
         prefix = self._s3_pane.current_prefix()
         key = f"{prefix}{name}/"
 
-        try:
-            self._s3_client.put_object(bucket, key, b"")
-            self._s3_pane.notify_new_folder(key, name)
-            self.set_status(f"Created folder '{name}'")
-        except Exception as e:
-            logger.warning("Failed to create folder '%s': %s", key, e)
-            self.set_status(f"Failed to create folder: {e}")
+        client = self._s3_client
+        self._run_key_op(
+            lambda: client.put_object(bucket, key, b""),
+            (key, name),
+            self._on_new_folder_finished,
+        )
+
+    def _on_new_folder_finished(self, payload) -> None:
+        key, name = payload
+        self._s3_pane.notify_new_folder(key, name)
+        self.set_status(f"Created folder '{name}'")
 
     # --- Copy / Paste / Rename / Get Info / Stats ---
 
@@ -929,8 +970,10 @@ class MainWindow(QMainWindow):
     def _key_exists(client, bucket: str, key: str) -> bool:
         try:
             client.head_object(bucket, key)
-        except Exception:
-            return False
+        except S3ClientError as exc:
+            if exc.code in ("404", "NoSuchKey", "NotFound"):
+                return False
+            raise
         return True
 
     @staticmethod
@@ -992,7 +1035,14 @@ class MainWindow(QMainWindow):
     def _run_key_op(self, fn, payload, on_finished) -> None:
         """Run an S3 key operation in a background worker."""
         worker = _KeyOpWorker(fn, payload, self)
-        worker.signals.finished.connect(on_finished)
+        client, bucket = self._s3_client, self._bucket_combo.currentData()
+        worker.signals.finished.connect(
+            lambda result: on_finished(result)
+            if not self._closing
+            and self._s3_client is client
+            and self._bucket_combo.currentData() == bucket
+            else None
+        )
         worker.signals.failed.connect(lambda msg: self.set_status(f"Operation failed: {msg}"))
         worker.finished.connect(lambda w=worker: self._discard_bg_worker(w))
         self._bg_workers.append(worker)
@@ -1012,7 +1062,13 @@ class MainWindow(QMainWindow):
         from s3ui.ui.stats_dialog import StatsDialog
 
         bucket = self._bucket_combo.currentData()
-        dialog = StatsDialog(s3_client=self._s3_client, bucket=bucket, db=self._db, parent=self)
+        dialog = StatsDialog(
+            s3_client=self._s3_client,
+            bucket=bucket,
+            db=self._db,
+            parent=self,
+            bucket_id=self._ensure_bucket_id(),
+        )
         dialog.exec()
 
     def _resolve_local_conflict(self, local_path, state: dict):
@@ -1022,6 +1078,9 @@ class MainWindow(QMainWindow):
         download batch.
         """
         if state.get("cancelled"):
+            return None
+        if self._download_path_busy(local_path):
+            self.set_status(f"Already downloading to '{local_path.name}' — skipped duplicate")
             return None
         if not local_path.exists():
             return local_path
@@ -1047,20 +1106,32 @@ class MainWindow(QMainWindow):
         # KEEP_BOTH — find a free "name (n).ext"
         for n in range(1, 1000):
             candidate = local_path.with_name(f"{local_path.stem} ({n}){local_path.suffix}")
-            if not candidate.exists():
+            if not candidate.exists() and not self._download_path_busy(candidate):
                 return candidate
         return None
 
-    def _engine_for(self, tid: int):
-        """The engine with a live worker for this transfer, else the current one.
+    def _download_path_busy(self, path) -> bool:
+        if self._db is None:
+            return False
+        return (
+            self._db.fetchone(
+                "SELECT id FROM transfers WHERE local_path = ? AND direction = 'download' "
+                "AND status IN ('queued', 'in_progress', 'paused') LIMIT 1",
+                (str(path),),
+            )
+            is not None
+        )
 
-        Retired engines' workers keep running after a bucket switch, so
-        pause/cancel must reach the engine that actually holds the events.
-        """
+    def _engine_for(self, tid: int):
+        """Route both live and paused transfers to their original bucket/profile."""
         for engine in [self._transfer_engine, *self._retired_engines]:
             if engine is not None and engine.owns(tid):
                 return engine
-        return self._transfer_engine
+        for engine in [self._transfer_engine, *self._retired_engines]:
+            if engine is not None and engine.handles(tid):
+                return engine
+        self.set_status("Select this transfer's profile and bucket to control it")
+        return None
 
     def _on_pause_transfer(self, tid: int) -> None:
         engine = self._engine_for(tid)
@@ -1068,10 +1139,9 @@ class MainWindow(QMainWindow):
             engine.pause(tid)
 
     def _on_resume_transfer(self, tid: int) -> None:
-        # Resume always goes through the current engine — a retired one
-        # no longer accepts work
-        if self._transfer_engine:
-            self._transfer_engine.resume(tid)
+        engine = self._engine_for(tid)
+        if engine:
+            engine.resume(tid)
 
     def _on_cancel_transfer(self, tid: int) -> None:
         engine = self._engine_for(tid)
@@ -1079,8 +1149,9 @@ class MainWindow(QMainWindow):
             engine.cancel(tid)
 
     def _on_retry_transfer(self, tid: int) -> None:
-        if self._transfer_engine:
-            self._transfer_engine.retry(tid)
+        engine = self._engine_for(tid)
+        if engine:
+            engine.retry(tid)
 
     # --- Central widget: splitter with local + S3 panes ---
 
@@ -1141,24 +1212,21 @@ class MainWindow(QMainWindow):
     def set_transfer_engine(self, engine) -> None:
         """Wire a TransferEngine to the panel and optimistic update signals."""
         old = self._transfer_engine
+        if old is engine:
+            return
         if old is not None:
-            # Optimistic pane updates would target the newly selected bucket
-            old.transfer_finished.disconnect(self._on_transfer_finished)
-            # Keep the old engine alive until its workers exit — dropping the
-            # last reference would destroy its QThreadPool under live threads
+            # Retain the original client and controls for paused/queued work too.
             self._retired_engines.append(old)
-            old.drained.connect(lambda o=old: self._discard_retired_engine(o))
-            old.shutdown()
 
         self._transfer_engine = engine
+        reused = engine in self._retired_engines
+        if reused:
+            self._retired_engines.remove(engine)
         self._transfer_panel.set_engine(engine)
 
         # Wire transfer completion → optimistic S3 pane updates + notifications
-        engine.transfer_finished.connect(self._on_transfer_finished)
-
-    def _discard_retired_engine(self, engine) -> None:
-        if engine in self._retired_engines:
-            self._retired_engines.remove(engine)
+        if not reused:
+            engine.transfer_finished.connect(self._on_transfer_finished)
 
     def _on_transfer_finished(self, transfer_id: int) -> None:
         """Handle transfer completion: optimistic update + notification."""
@@ -1169,7 +1237,7 @@ class MainWindow(QMainWindow):
         if not row:
             return
 
-        if row["direction"] == "upload":
+        if row["direction"] == "upload" and row["bucket_id"] == self._ensure_bucket_id():
             key = row["object_key"]
             size = row["total_bytes"] or 0
             self._s3_pane.notify_upload_complete(key, size)
@@ -1218,6 +1286,8 @@ class MainWindow(QMainWindow):
 
     def _on_quick_open_ready(self, path: str) -> None:
         self._temp_files.append(path)
+        if self._closing:
+            return
         QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         self.set_status("Ready")
 
@@ -1345,11 +1415,35 @@ class MainWindow(QMainWindow):
                 self._local_pane.navigate_to(local_path, record_history=False)
 
     def closeEvent(self, event) -> None:
-        self._save_state()
+        if not self._closing:
+            self._closing = True
+            self._connect_timer.stop()
+            self._save_state()
+            self._s3_pane._fetch_id += 1
+            for worker in self._bg_workers:
+                worker.requestInterruption()
+            self.setEnabled(False)
+            for engine in [self._transfer_engine, *self._retired_engines]:
+                if isinstance(engine, TransferEngine):
+                    engine.pause_all()
+                    engine.shutdown()
+            self._close_timer = QTimer(self)
+            self._close_timer.setSingleShot(True)
+            self._close_timer.timeout.connect(self.close)
+
+        # Keep dispatching queued signals while requests finish; never block the
+        # GUI thread or destroy a QThread/QThreadPool that is still running.
+        busy = bool(self._bg_workers or self._s3_pane._fetch_workers)
+        busy = busy or any(w.isRunning() for w in self.findChildren(QThread))
+        busy = busy or any(
+            isinstance(e, TransferEngine) and (e._active or e._pool.activeThreadCount())
+            for e in [self._transfer_engine, *self._retired_engines]
+        )
+        if busy:
+            event.ignore()
+            self._close_timer.start(25)
+            return
         self._cleanup_temp_files()
-        # Join outstanding QThreads — destroying a running QThread aborts Qt
-        for worker in list(self._bg_workers):
-            worker.wait(2000)
         if self._tray_icon:
             self._tray_icon.hide()
         super().closeEvent(event)

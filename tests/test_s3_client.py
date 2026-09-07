@@ -122,6 +122,25 @@ class TestPresignedUrl:
 
 
 class TestCopyObject:
+    def test_managed_multipart_copy_preserves_contents_and_metadata(self, s3_env):
+        client, raw = s3_env
+        data = b"a" * (8 * 1024**2) + b"b" * (1024**2)
+        raw.put_object(
+            Bucket="test-bucket",
+            Key="source.bin",
+            Body=data,
+            ContentType="application/x-s3ui-test",
+            Metadata={"test": "preserved"},
+        )
+        client.copy_object("test-bucket", "source.bin", "test-bucket", "copy.bin")
+        response = raw.get_object(Bucket="test-bucket", Key="copy.bin")
+        try:
+            assert response["Body"].read() == data
+            assert response["Metadata"] == {"test": "preserved"}
+            assert response["ContentType"] == "application/x-s3ui-test"
+        finally:
+            response["Body"].close()
+
     def test_copy_creates_at_destination(self, s3_env):
         client, raw = s3_env
         raw.put_object(Bucket="test-bucket", Key="original.txt", Body=b"data")

@@ -16,6 +16,9 @@ build/icons/*
 build/scripts/*
 !build/scripts/sign-macos.sh
 !build/entitlements.plist
+!build/installer.nsi
+!build/s3ui.desktop
+!build/scripts/make-appimage.sh
 *.whl
 
 # Virtual environments

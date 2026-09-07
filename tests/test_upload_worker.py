@@ -204,3 +204,49 @@ class TestUploadFailure:
 
             row = db.fetchone("SELECT status FROM transfers WHERE id = ?", (tid,))
             assert row["status"] == "failed"
+
+
+class TestMultipartRestart:
+    def test_resume_with_reopened_database_preserves_every_byte(
+        self, db, bucket_id, profile, tmp_path, monkeypatch
+    ):
+        with mock_aws():
+            raw = boto3.client("s3", region_name="us-east-1")
+            raw.create_bucket(Bucket="test-bucket")
+            client = S3Client(profile)
+            source = tmp_path / "restart.bin"
+            data = b"a" * (8 * 1024**2) + b"b" * (1024**2)
+            source.write_bytes(data)
+            tid = _create_transfer(db, bucket_id, "restart.bin", source)
+            pause = threading.Event()
+            upload = client.upload_part
+
+            def pause_after_part(*args):
+                etag = upload(*args)
+                pause.set()
+                return etag
+
+            monkeypatch.setattr(client, "upload_part", pause_after_part)
+            UploadWorker(tid, client, db, "test-bucket", pause, threading.Event()).run()
+            assert (
+                db.fetchone("SELECT status FROM transfers WHERE id = ?", (tid,))["status"]
+                == "paused"
+            )
+            db.close()
+            reopened = Database(tmp_path / "test.db")
+            monkeypatch.setattr(client, "upload_part", upload)
+            try:
+                UploadWorker(
+                    tid, client, reopened, "test-bucket", threading.Event(), threading.Event()
+                ).run()
+                assert (
+                    reopened.fetchone("SELECT status FROM transfers WHERE id = ?", (tid,))["status"]
+                    == "completed"
+                )
+                body = raw.get_object(Bucket="test-bucket", Key="restart.bin")["Body"]
+                try:
+                    assert body.read() == data
+                finally:
+                    body.close()
+            finally:
+                reopened.close()

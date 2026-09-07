@@ -123,8 +123,7 @@ class ListingCache:
         """Apply background revalidation results safely.
 
         If mutation_counter matches counter_at_fetch_start, does a standard replace.
-        If mutations happened since fetch started, merges: preserves optimistic
-        additions while incorporating external changes.
+        If mutations happened since fetch started, discard the stale response.
 
         Returns True if the cache was updated.
         """
@@ -147,29 +146,9 @@ class ListingCache:
                 entry.dirty = False
                 return True
 
-            # Mutations happened — merge strategy:
-            # Keep items that exist in new_items (server truth)
-            # Also keep items that were added by optimistic mutations
-            # (items in current cache but NOT in the old server state)
-            new_keys = {item.key for item in new_items}
-
-            # Optimistic items: in current cache but not from server
-            optimistic = [item for item in entry.items if item.key not in new_keys]
-
-            # Build merged list: server items + optimistic items
-            merged = list(new_items) + optimistic
-
-            entry.items = merged
-            entry.fetched_at = time.monotonic()
-            entry.dirty = bool(optimistic)  # still dirty if we have optimistic items
-            # Don't reset mutation_counter — it tracks total mutations
-            logger.debug(
-                "Merged revalidation for '%s': %d server + %d optimistic items",
-                prefix,
-                len(new_items),
-                len(optimistic),
-            )
-            return True
+            # The response predates a local mutation. Keeping it would resurrect
+            # deletes or undo renames/overwrites; let the next revalidation retry.
+            return False
 
     def _evict_if_needed(self) -> None:
         """Evict LRU entries if over capacity. Must be called with lock held."""

@@ -6,6 +6,7 @@ import logging
 import random
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -74,6 +75,11 @@ class DownloadWorker(QRunnable):
 
         local_path = Path(row["local_path"])
         object_key = row["object_key"]
+        temp_path = local_path.parent / f".s3ui-download-{self.transfer_id}.tmp"
+        if temp_path.is_symlink():
+            raise RuntimeError("Download temporary file must not be a symbolic link.")
+        if self._check_control(temp_path, row["transferred"] or 0):
+            return
 
         # Validate destination directory
         if not local_path.parent.exists():
@@ -94,13 +100,20 @@ class DownloadWorker(QRunnable):
         # Get object metadata
         item = self._s3.head_object(self._bucket, object_key)
         total_size = item.size or 0
-
+        self._etag = item.etag
+        # Never combine bytes from different versions of the object. Legacy
+        # partial files with no recorded identity restart from zero as well.
+        if temp_path.exists() and (
+            not self._etag
+            or row["source_etag"] != self._etag
+            or row["total_bytes"] != total_size
+            or temp_path.stat().st_size > total_size
+        ):
+            temp_path.unlink()
         self._db.execute(
-            "UPDATE transfers SET total_bytes = ? WHERE id = ?",
-            (total_size, self.transfer_id),
+            "UPDATE transfers SET total_bytes = ?, source_etag = ? WHERE id = ?",
+            (total_size, self._etag, self.transfer_id),
         )
-
-        temp_path = local_path.parent / f".s3ui-download-{self.transfer_id}.tmp"
 
         if total_size < MULTIPART_THRESHOLD:
             self._single_download(object_key, local_path, temp_path, total_size)
@@ -108,10 +121,14 @@ class DownloadWorker(QRunnable):
             self._ranged_download(object_key, local_path, temp_path, total_size)
 
     def _single_download(self, key: str, final_path: Path, temp_path: Path, total: int) -> None:
-        body = self._s3.get_object(self._bucket, key)
-        data = body.read()
+        with closing(self._s3.get_object(self._bucket, key, etag=self._etag)) as body:
+            data = body.read()
+        if len(data) != total:
+            raise RuntimeError(f"Size mismatch: expected {total}, got {len(data)}")
         temp_path.write_bytes(data)
-        temp_path.rename(final_path)
+        if self._check_control(temp_path, len(data)):
+            return
+        temp_path.replace(final_path)
         self._complete(total)
 
     def _ranged_download(self, key: str, final_path: Path, temp_path: Path, total: int) -> None:
@@ -140,11 +157,18 @@ class DownloadWorker(QRunnable):
                 end = min(offset + chunk_size - 1, total - 1)
                 range_header = f"bytes={offset}-{end}"
 
-                data = self._download_chunk_with_retry(key, range_header)
+                data = self._download_chunk_with_retry(key, range_header, end - offset + 1)
                 if data is None:
-                    return  # failed signal already emitted
+                    if self._cancel.is_set():
+                        cancelled = True
+                    elif self._pause.is_set():
+                        paused = True
+                    else:
+                        return  # failed signal already emitted
+                    break
 
                 f.write(data)
+                f.flush()
                 offset += len(data)
 
                 self._db.execute(
@@ -170,15 +194,28 @@ class DownloadWorker(QRunnable):
             self.signals.failed.emit(self.transfer_id, msg, "")
             return
 
-        # Atomic rename
-        temp_path.rename(final_path)
+        if self._check_control(temp_path, offset):
+            return
+        # Atomic replacement also supports an existing destination on Windows.
+        temp_path.replace(final_path)
         self._complete(total)
 
-    def _download_chunk_with_retry(self, key: str, range_header: str) -> bytes | None:
+    def _download_chunk_with_retry(
+        self, key: str, range_header: str, expected_size: int
+    ) -> bytes | None:
         for attempt in range(MAX_RETRY_ATTEMPTS):
+            if self._cancel.is_set() or self._pause.is_set():
+                return None
             try:
-                body = self._s3.get_object(self._bucket, key, range_header)
-                return body.read()
+                with closing(
+                    self._s3.get_object(self._bucket, key, range_header, etag=self._etag)
+                ) as body:
+                    data = body.read()
+                if len(data) != expected_size:
+                    raise RuntimeError(
+                        f"Range size mismatch: expected {expected_size}, got {len(data)}"
+                    )
+                return data
             except Exception as e:
                 if attempt < MAX_RETRY_ATTEMPTS - 1:
                     delay = _backoff_delay(attempt)
@@ -188,7 +225,7 @@ class DownloadWorker(QRunnable):
                         delay,
                         e,
                     )
-                    time.sleep(delay)
+                    self._cancel.wait(delay)
                 else:
                     self._mark_failed(str(e))
                     self.signals.failed.emit(
@@ -197,6 +234,15 @@ class DownloadWorker(QRunnable):
                         str(e),
                     )
                     return None
+
+    def _check_control(self, temp_path: Path, offset: int) -> bool:
+        if self._cancel.is_set():
+            self._do_cancel(temp_path)
+            return True
+        if self._pause.is_set():
+            self._do_pause(offset)
+            return True
+        return False
 
     def _complete(self, total: int) -> None:
         self._db.execute(
@@ -233,11 +279,10 @@ class DownloadWorker(QRunnable):
         logger.info("Download %d cancelled", self.transfer_id)
 
     def _do_pause(self, offset: int) -> None:
-        # Guarded on in_progress: if the transfer was already re-queued by a
-        # quick resume, don't clobber that status
         self._db.execute(
             "UPDATE transfers SET status = 'paused', transferred = ?, "
-            "updated_at = datetime('now') WHERE id = ? AND status = 'in_progress'",
+            "updated_at = datetime('now') WHERE id = ? "
+            "AND status IN ('queued', 'in_progress', 'paused')",
             (offset, self.transfer_id),
         )
         self.signals.stopped.emit(self.transfer_id)

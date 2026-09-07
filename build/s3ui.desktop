@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=S3UI
+Comment=Native file manager for Amazon S3
+Exec=S3UI
+Icon=s3ui
+Categories=Utility;FileManager;Network;
+Terminal=false
+StartupNotify=true

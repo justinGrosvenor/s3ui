@@ -27,9 +27,13 @@ Works with **Amazon S3**, **MinIO**, and any S3-compatible storage.
 - **Drag and drop** — drop files onto the S3 pane to upload
 - **Upload and download** — right-click context menus or drag and drop
 - **New folder** — toolbar button and context menu
-- **Multipart uploads** — large files are split and uploaded in parallel
+- **Multipart uploads** — large files stream from disk in resumable parts
 - **Resume support** — interrupted transfers pick up where they left off
 - **Transfer queue** — pause, resume, cancel, and retry individual transfers
+- **Folder operations** — recursive downloads and deletion, preserving folder structure
+- **Copy and rename** — server-side copies with metadata preservation
+- **Share links** — copy a presigned download URL
+- **Bucket-scoped credentials** — enter a bucket directly when listing all buckets is restricted
 - **Cost tracking** — estimates your monthly S3 costs as you work
 - **AWS CLI profiles** — auto-discovers profiles from `~/.aws/config`
 - **Custom endpoints** — connect to MinIO, LocalStack, or any S3-compatible service
@@ -76,6 +80,20 @@ pip install -e ".[dev]"
 pre-commit install
 pytest
 ```
+
+To run the release checks without a desktop session:
+
+```bash
+ruff check src/ tests/ scripts/
+ruff format --check src/ tests/ scripts/
+QT_QPA_PLATFORM=offscreen pytest
+pip install build
+python -m build
+```
+
+The repeatable local performance audit is `python scripts/audit_hot_paths.py`.
+See [the v1.1.0 review](docs/release/v1.1.0-review.md) for findings, measurements,
+and the remaining checks on live storage services and platform installers.
 
 ## License
 

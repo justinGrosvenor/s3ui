@@ -39,7 +39,7 @@ dev = [
     "pytest>=7.0",
     "pytest-qt>=4.2",
     "moto[s3]>=4.0",
-    "ruff>=0.1",
+    "ruff==0.14.14",
     "pre-commit>=3.0",
     "pyinstaller>=6.0",
 ]

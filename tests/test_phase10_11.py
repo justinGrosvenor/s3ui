@@ -20,24 +20,24 @@ def db(tmp_path: Path) -> Database:
 
 class TestMainWindowWithDB:
     def test_creates_with_db(self, qtbot, db):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
         assert window.windowTitle() == "S3UI"
         assert window._db is db
 
     def test_show_log_action_exists(self, qtbot, db):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
         assert window._show_log_action.text() == "Show &Log File"
 
     def test_show_log_action_connected(self, qtbot, db):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
         # Just verify the action is connected (no crash)
         assert window._show_log_action.receivers(window._show_log_action.triggered) > 0
 
     def test_tray_icon_setup(self, qtbot, db):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
         # tray_icon may be None if system tray not available in test env
         # but the method should not crash
@@ -47,7 +47,7 @@ class TestMainWindowWithDB:
 class TestWindowState:
     def test_save_and_restore_state(self, qtbot, db):
         # Create window and save state
-        window1 = MainWindow(db=db)
+        window1 = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window1)
         window1.resize(1000, 700)
         window1._save_state()
@@ -58,7 +58,7 @@ class TestWindowState:
         assert get_pref(db, "splitter_state") is not None
 
     def test_transfer_dock_visibility_persisted(self, qtbot, db):
-        window1 = MainWindow(db=db)
+        window1 = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window1)
 
         # Hide transfer dock
@@ -68,7 +68,7 @@ class TestWindowState:
         assert get_pref(db, "transfer_dock_visible") == "false"
 
     def test_local_pane_path_persisted(self, qtbot, db, tmp_path):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         test_dir = tmp_path / "test_dir"
@@ -83,14 +83,14 @@ class TestWindowState:
         test_dir.mkdir()
         set_pref(db, "local_pane_path", str(test_dir))
 
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
         assert window._local_pane.current_path() == str(test_dir)
 
 
 class TestKeyboardShortcuts:
     def test_focus_shortcuts_exist(self, qtbot, db):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         actions = {a.text(): a for a in window.actions()}
@@ -98,7 +98,7 @@ class TestKeyboardShortcuts:
         assert "Focus S3 Pane" in actions
 
     def test_focus_local_pane(self, qtbot, db):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
         window.show()
 
@@ -116,7 +116,7 @@ class TestQuickOpen:
         assert hasattr(pane, "quick_open_requested")
 
     def test_temp_cleanup(self, qtbot, db, tmp_path):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         # Create a fake temp file
@@ -133,7 +133,7 @@ class TestTransferEngineWiring:
     def test_set_transfer_engine(self, qtbot, db):
         from unittest.mock import MagicMock
 
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         engine = MagicMock()
@@ -147,7 +147,7 @@ class TestTransferEngineWiring:
         assert window._transfer_engine is engine
 
     def test_on_transfer_finished_upload(self, qtbot, db, tmp_path):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         # Create a bucket and transfer record
@@ -171,7 +171,7 @@ class TestTransferEngineWiring:
 
 class TestNotifications:
     def test_notify_skips_when_active(self, qtbot, db):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
         window.show()
 
@@ -235,7 +235,7 @@ class TestConnectionFlow:
         monkeypatch.setattr("s3ui.main_window.discover_aws_profiles", lambda: [])
 
     def test_populate_profiles_aws(self, qtbot, db, mock_keyring, mock_discover):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         # _populate_profiles is called via _init_connection on a timer,
@@ -259,7 +259,7 @@ class TestConnectionFlow:
             )
         )
 
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
         window._populate_profiles()
 
@@ -279,7 +279,7 @@ class TestConnectionFlow:
             )
         )
 
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
         window._populate_profiles()
 
@@ -324,7 +324,7 @@ class TestConnectionFlow:
         assert "Bad key" in sig.args[0]
 
     def test_on_connected_populates_buckets(self, qtbot, db, mock_keyring, mock_discover):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         mock_client = MagicMock()
@@ -336,7 +336,7 @@ class TestConnectionFlow:
         assert window._bucket_combo.itemData(2) == "gamma"
 
     def test_on_connected_saves_last_profile(self, qtbot, db, mock_keyring, mock_discover):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         # Set a profile in the combo
@@ -349,7 +349,7 @@ class TestConnectionFlow:
         assert get_pref(db, "last_profile") == "work"
 
     def test_on_bucket_selected_sets_bucket(self, qtbot, db, mock_keyring, mock_discover):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         # Set up S3 pane with a mock client
@@ -364,7 +364,7 @@ class TestConnectionFlow:
             mock_set.assert_called_once_with("test-bucket")
 
     def test_on_bucket_selected_saves_preference(self, qtbot, db, mock_keyring, mock_discover):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         mock_client = MagicMock()
@@ -373,10 +373,12 @@ class TestConnectionFlow:
         window._bucket_combo.addItem("mybucket", "mybucket")
         window._on_bucket_selected(0)
 
-        assert get_pref(db, "last_bucket") == "mybucket"
+        # Preference is scoped per profile — same-named buckets on other
+        # profiles are different buckets
+        assert get_pref(db, window._last_bucket_key()) == "mybucket"
 
     def test_on_connect_failed_sets_status(self, qtbot, db, mock_keyring, mock_discover):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         window._on_connect_failed("Invalid access key")
@@ -386,7 +388,7 @@ class TestConnectionFlow:
     def test_on_connected_restores_last_bucket(self, qtbot, db, mock_keyring, mock_discover):
         set_pref(db, "last_bucket", "beta")
 
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         mock_client = MagicMock()
@@ -398,7 +400,7 @@ class TestConnectionFlow:
     def test_init_connection_no_profiles_shows_wizard(
         self, qtbot, db, mock_keyring, mock_discover_empty
     ):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         with patch.object(window, "_show_setup_wizard") as mock_wizard:
@@ -408,7 +410,7 @@ class TestConnectionFlow:
     def test_init_connection_restores_last_profile(self, qtbot, db, mock_keyring, mock_discover):
         set_pref(db, "last_profile", "work")
 
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         with patch.object(window, "_connect_to_profile") as mock_connect:
@@ -420,7 +422,7 @@ class TestConnectionFlow:
             assert profile.is_aws_profile is True
 
     def test_open_settings_passes_store_and_db(self, qtbot, db, mock_keyring, mock_discover):
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         with patch("s3ui.main_window.SettingsDialog") as MockDialog:
@@ -438,7 +440,7 @@ class TestUploadDownloadWiring:
         monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr("s3ui.main_window.discover_aws_profiles", lambda: ["default"])
 
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         mock_client = MagicMock()
@@ -508,6 +510,8 @@ class TestUploadDownloadWiring:
         f2.write_text("world!")
 
         connected_window._enqueue_uploads([str(f1), str(f2)])
+        for worker in list(connected_window._bg_workers):
+            worker.wait(3000)
 
         rows = db.fetchall("SELECT * FROM transfers WHERE direction = 'upload'")
         assert len(rows) == 2
@@ -523,6 +527,8 @@ class TestUploadDownloadWiring:
         f = tmp_path / "readme.txt"
         f.write_text("data")
         connected_window._enqueue_uploads([str(f)])
+        for worker in list(connected_window._bg_workers):
+            worker.wait(3000)
 
         row = db.fetchone("SELECT object_key FROM transfers WHERE direction = 'upload'")
         assert row["object_key"] == "docs/readme.txt"
@@ -540,6 +546,8 @@ class TestUploadDownloadWiring:
         (nested / "c.txt").write_text("c")
 
         connected_window._enqueue_uploads([str(sub)])
+        for worker in list(connected_window._bg_workers):
+            worker.wait(3000)
 
         rows = db.fetchall("SELECT object_key FROM transfers ORDER BY object_key")
         keys = [r["object_key"] for r in rows]
@@ -583,7 +591,7 @@ class TestUploadDownloadWiring:
 
     def test_upload_not_connected_shows_status(self, qtbot, db, mock_keyring):
         """Upload without connection shows a status message."""
-        window = MainWindow(db=db)
+        window = MainWindow(db=db, auto_connect=False)
         qtbot.addWidget(window)
 
         window._enqueue_uploads(["/tmp/fake.txt"])
@@ -592,18 +600,23 @@ class TestUploadDownloadWiring:
     def test_transfer_panel_control_signals(self, connected_window):
         """Transfer panel pause/resume/cancel/retry signals reach the engine."""
         engine = connected_window._transfer_engine
+        tid = connected_window._db.execute(
+            "INSERT INTO transfers (bucket_id, object_key, direction, local_path) "
+            "VALUES (?, 'test', 'upload', '/unused')",
+            (connected_window._ensure_bucket_id(),),
+        ).lastrowid
         with patch.object(engine, "pause") as mock_pause:
-            connected_window._on_pause_transfer(42)
-            mock_pause.assert_called_once_with(42)
+            connected_window._on_pause_transfer(tid)
+            mock_pause.assert_called_once_with(tid)
         with patch.object(engine, "resume") as mock_resume:
-            connected_window._on_resume_transfer(42)
-            mock_resume.assert_called_once_with(42)
+            connected_window._on_resume_transfer(tid)
+            mock_resume.assert_called_once_with(tid)
         with patch.object(engine, "cancel") as mock_cancel:
-            connected_window._on_cancel_transfer(42)
-            mock_cancel.assert_called_once_with(42)
+            connected_window._on_cancel_transfer(tid)
+            mock_cancel.assert_called_once_with(tid)
         with patch.object(engine, "retry") as mock_retry:
-            connected_window._on_retry_transfer(42)
-            mock_retry.assert_called_once_with(42)
+            connected_window._on_retry_transfer(tid)
+            mock_retry.assert_called_once_with(tid)
 
     def test_delete_requested_calls_delete(self, connected_window):
         """_on_delete_requested deletes objects after confirmation."""
@@ -621,8 +634,8 @@ class TestUploadDownloadWiring:
             connected_window._on_delete_requested(items)
 
         # Worker runs in background — wait for it
-        if connected_window._delete_worker:
-            connected_window._delete_worker.wait(3000)
+        for worker in list(connected_window._bg_workers):
+            worker.wait(3000)
 
         mock_client.delete_objects.assert_called_once_with("test-bucket", ["old.txt"])
 
@@ -639,11 +652,18 @@ class TestUploadDownloadWiring:
         connected_window._s3_client.delete_objects.assert_not_called()
 
     def test_delete_folder(self, connected_window):
-        """Folders (prefixes) can be deleted."""
+        """Folders (prefixes) are deleted recursively with their contents."""
         from s3ui.models.s3_objects import S3Item
 
         mock_client = connected_window._s3_client
         mock_client.delete_objects.return_value = []
+        mock_client.list_objects.return_value = (
+            [
+                S3Item(name="a.txt", key="my-folder/a.txt", is_prefix=False, size=1),
+                S3Item(name="b.txt", key="my-folder/sub/b.txt", is_prefix=False, size=1),
+            ],
+            [],
+        )
 
         items = [S3Item(name="my-folder", key="my-folder/", is_prefix=True)]
 
@@ -651,10 +671,14 @@ class TestUploadDownloadWiring:
         with patch("s3ui.main_window.QMessageBox.question", return_value=ret_yes):
             connected_window._on_delete_requested(items)
 
-        if connected_window._delete_worker:
-            connected_window._delete_worker.wait(3000)
+        for worker in list(connected_window._bg_workers):
+            worker.wait(3000)
 
-        mock_client.delete_objects.assert_called_once_with("test-bucket", ["my-folder/"])
+        mock_client.list_objects.assert_called_with("test-bucket", "my-folder/", delimiter="")
+        mock_client.delete_objects.assert_called_once_with(
+            "test-bucket",
+            ["my-folder/a.txt", "my-folder/sub/b.txt", "my-folder/"],
+        )
 
     def test_new_folder_creates_object(self, connected_window):
         """New folder creates an empty S3 object with trailing slash."""
@@ -666,6 +690,8 @@ class TestUploadDownloadWiring:
         ):
             connected_window._on_new_folder_requested()
 
+        for worker in list(connected_window._bg_workers):
+            worker.wait(3000)
         mock_client.put_object.assert_called_once_with("test-bucket", "my-folder/", b"")
 
     def test_new_folder_cancelled(self, connected_window):
@@ -691,6 +717,8 @@ class TestUploadDownloadWiring:
         ):
             connected_window._on_new_folder_requested()
 
+        for worker in list(connected_window._bg_workers):
+            worker.wait(3000)
         mock_client.put_object.assert_called_once_with("test-bucket", "docs/sub/", b"")
 
     def test_new_folder_button_exists(self, connected_window):

@@ -100,8 +100,47 @@ class TestDeleteObject:
         objects, _ = client.list_objects("test-bucket")
         assert len(objects) == 0
 
+    def test_batch_delete_over_1000_keys(self, s3_env):
+        """Deletes exceeding S3's 1000-key request limit are chunked."""
+        client, raw = s3_env
+        keys = [f"bulk/{i:04d}.txt" for i in range(1050)]
+        for key in keys:
+            raw.put_object(Bucket="test-bucket", Key=key, Body=b"x")
+        failed = client.delete_objects("test-bucket", keys)
+        assert failed == []
+        objects, _ = client.list_objects("test-bucket", prefix="bulk/", delimiter="")
+        assert len(objects) == 0
+
+
+class TestPresignedUrl:
+    def test_generates_get_url(self, s3_env):
+        client, raw = s3_env
+        raw.put_object(Bucket="test-bucket", Key="share.txt", Body=b"hi")
+        url = client.generate_presigned_url("test-bucket", "share.txt")
+        assert "share.txt" in url
+        assert "Expires" in url or "X-Amz-Expires" in url
+
 
 class TestCopyObject:
+    def test_managed_multipart_copy_preserves_contents_and_metadata(self, s3_env):
+        client, raw = s3_env
+        data = b"a" * (8 * 1024**2) + b"b" * (1024**2)
+        raw.put_object(
+            Bucket="test-bucket",
+            Key="source.bin",
+            Body=data,
+            ContentType="application/x-s3ui-test",
+            Metadata={"test": "preserved"},
+        )
+        client.copy_object("test-bucket", "source.bin", "test-bucket", "copy.bin")
+        response = raw.get_object(Bucket="test-bucket", Key="copy.bin")
+        try:
+            assert response["Body"].read() == data
+            assert response["Metadata"] == {"test": "preserved"}
+            assert response["ContentType"] == "application/x-s3ui-test"
+        finally:
+            response["Body"].close()
+
     def test_copy_creates_at_destination(self, s3_env):
         client, raw = s3_env
         raw.put_object(Bucket="test-bucket", Key="original.txt", Body=b"data")

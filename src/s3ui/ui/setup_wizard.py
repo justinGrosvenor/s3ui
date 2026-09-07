@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -57,8 +57,8 @@ class _TestWorkerSignals(QObject):
 class _TestWorker(QThread):
     """Background thread for testing AWS credentials."""
 
-    def __init__(self, store: CredentialStore, profile: Profile) -> None:
-        super().__init__()
+    def __init__(self, store: CredentialStore, profile: Profile, parent=None) -> None:
+        super().__init__(parent)
         self.signals = _TestWorkerSignals()
         self._store = store
         self._profile = profile
@@ -224,7 +224,7 @@ class CredentialPage(QWizardPage):
         self._test_status.setStyleSheet("color: gray;")
         self._error_label.setVisible(False)
 
-        self._worker = _TestWorker(self._store, profile)
+        self._worker = _TestWorker(self._store, profile, self)
         self._worker.signals.finished.connect(self._on_test_result)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
@@ -441,6 +441,10 @@ class SetupWizard(QWizard):
     ) -> None:
         super().__init__(parent)
         self._store = store or CredentialStore()
+        self._finish_result = 0
+        self._finish_timer = QTimer(self)
+        self._finish_timer.setSingleShot(True)
+        self._finish_timer.timeout.connect(lambda: self.done(self._finish_result))
         self.setWindowTitle("S3UI Setup")
         self.setMinimumSize(600, 550)
         self.setWizardStyle(QWizard.WizardStyle.ModernStyle)
@@ -456,6 +460,14 @@ class SetupWizard(QWizard):
     def get_profile(self) -> Profile:
         """Return the profile configured by the user."""
         return self._cred_page.get_profile()
+
+    def done(self, result: int) -> None:
+        if any(worker.isRunning() for worker in self.findChildren(QThread)):
+            self._finish_result = result
+            self.setEnabled(False)
+            self._finish_timer.start(25)
+            return
+        super().done(result)
 
     def get_bucket(self) -> str:
         """Return the bucket selected (or entered) by the user."""

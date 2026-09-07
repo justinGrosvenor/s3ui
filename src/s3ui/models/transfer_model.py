@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer
+from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt, QTimer, pyqtSignal
 
 if TYPE_CHECKING:
     from s3ui.db.database import Database
@@ -104,6 +104,7 @@ class TransferModel(QAbstractTableModel):
     """Table model for transfers with 100ms coalesced updates."""
 
     _EMPTY_INDEX = QModelIndex()
+    counts_changed = pyqtSignal()
 
     def __init__(self, db: Database | None = None, parent=None) -> None:
         super().__init__(parent)
@@ -188,7 +189,7 @@ class TransferModel(QAbstractTableModel):
 
     def add_transfer(self, transfer_id: int) -> None:
         """Add a transfer from the database."""
-        if self._db is None:
+        if self._db is None or transfer_id in self._id_to_row:
             return
         db_row = self._db.fetchone("SELECT * FROM transfers WHERE id = ?", (transfer_id,))
         if not db_row:
@@ -214,6 +215,7 @@ class TransferModel(QAbstractTableModel):
         self._rows.append(row)
         self._id_to_row[transfer_id] = idx
         self.endInsertRows()
+        self.counts_changed.emit()
 
         if not self._timer.isActive():
             self._timer.start()
@@ -262,16 +264,21 @@ class TransferModel(QAbstractTableModel):
         idx = self._id_to_row.get(transfer_id)
         if idx is not None:
             self._dirty_rows.add(idx)
+            if not self._timer.isActive():
+                self._timer.start()
 
     def _flush_updates(self) -> None:
         if not self._pending_updates:
+            self._timer.stop()
             return
 
+        counts_changed = False
         for transfer_id, fields in self._pending_updates.items():
             idx = self._id_to_row.get(transfer_id)
             if idx is None or idx >= len(self._rows):
                 continue
             row = self._rows[idx]
+            counts_changed |= "status" in fields and fields["status"] != row.status
             for field_name, value in fields.items():
                 if hasattr(row, field_name):
                     setattr(row, field_name, value)
@@ -285,11 +292,9 @@ class TransferModel(QAbstractTableModel):
 
         self._pending_updates.clear()
         self._dirty_rows.clear()
-
-        # Stop timer if no active transfers
-        has_active = any(r.status in ("queued", "in_progress", "paused") for r in self._rows)
-        if not has_active:
-            self._timer.stop()
+        self._timer.stop()  # The next incoming update rearms the coalescing timer.
+        if counts_changed:
+            self.counts_changed.emit()
 
     def active_count(self) -> int:
         return sum(1 for r in self._rows if r.status == "in_progress")

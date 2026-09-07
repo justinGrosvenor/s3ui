@@ -43,7 +43,7 @@ class TestDatabase:
 
     def test_schema_version_is_updated(self, db: Database):
         row = db.fetchone("SELECT MAX(version) as v FROM schema_version")
-        assert row["v"] == 1
+        assert row["v"] == 2
 
     def test_crud_preferences(self, db: Database):
         set_pref(db, "test_key", "test_value")

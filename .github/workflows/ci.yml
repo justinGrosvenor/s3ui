@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, v1.1.0-candidate]
     tags-ignore: ["**"]
   pull_request:
     branches: [main]
@@ -19,17 +19,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
-      - run: ruff check src/ tests/
-      - run: ruff format --check src/ tests/
+      - run: pip install ruff==0.14.14
+      - run: ruff check src/ tests/ scripts/
+      - run: ruff format --check src/ tests/ scripts/
 
   test:
     needs: lint
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -49,3 +50,9 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: pytest --tb=short
+
+      - name: Build wheel and source distribution
+        if: runner.os == 'Linux' && matrix.python-version == '3.12'
+        run: |
+          pip install build
+          python -m build

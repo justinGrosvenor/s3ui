@@ -12,7 +12,7 @@ def test_main_window_creates(qtbot):
     """MainWindow can be instantiated without error."""
     from s3ui.main_window import MainWindow
 
-    window = MainWindow()
+    window = MainWindow(auto_connect=False)
     qtbot.addWidget(window)
     assert window.windowTitle() == "S3UI"
     assert window.minimumWidth() == 900

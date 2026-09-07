@@ -32,11 +32,15 @@ class StatsDialog(QDialog):
         bucket: str = "",
         db: Database | None = None,
         parent=None,
+        bucket_id: int | None = None,
     ) -> None:
         super().__init__(parent)
         self._s3 = s3_client
         self._bucket = bucket
         self._db = db
+        self._bucket_id = bucket_id
+        self._cancelled = False
+        self._closing_result: int | None = None
         self._collector: StatsCollector | None = None
 
         self.setWindowTitle(f"Bucket Stats — {bucket}" if bucket else "Bucket Stats")
@@ -95,7 +99,7 @@ class StatsDialog(QDialog):
         layout.addWidget(btn_layout)
 
     def _start_scan(self) -> None:
-        if not self._s3 or not self._bucket:
+        if not self._s3 or not self._bucket or self._collector is not None:
             return
 
         self._scan_btn.setVisible(False)
@@ -104,14 +108,19 @@ class StatsDialog(QDialog):
         self._progress_label.setVisible(True)
         self._summary.setText("Scanning...")
 
-        self._collector = StatsCollector(self._s3, self._bucket, self._db, self)
+        self._cancelled = False
+        self._collector = StatsCollector(
+            self._s3, self._bucket, self._db, self, bucket_id=self._bucket_id
+        )
         self._collector.signals.progress.connect(self._on_progress)
         self._collector.signals.complete.connect(self._on_complete)
         self._collector.signals.error.connect(self._on_error)
-        self._collector.finished.connect(self._collector.deleteLater)
+        self._collector.finished.connect(self._on_scan_finished)
         self._collector.start()
 
     def _cancel_scan(self) -> None:
+        self._cancelled = True
+        self._scan_btn.setEnabled(False)
         if self._collector:
             self._collector.cancel()
         self._scan_btn.setVisible(True)
@@ -121,9 +130,13 @@ class StatsDialog(QDialog):
         self._summary.setText("Scan cancelled.")
 
     def _on_progress(self, count: int) -> None:
+        if self._cancelled:
+            return
         self._progress_label.setText(f"Scanned {count:,} objects...")
 
     def _on_complete(self, snapshot: BucketSnapshot) -> None:
+        if self._cancelled:
+            return
         self._scan_btn.setVisible(True)
         self._scan_btn.setText("Rescan")
         self._cancel_btn.setVisible(False)
@@ -160,3 +173,18 @@ class StatsDialog(QDialog):
         self._progress_bar.setVisible(False)
         self._progress_label.setVisible(False)
         self._summary.setText(f"Error: {msg}")
+
+    def _on_scan_finished(self) -> None:
+        collector = self._collector
+        self._collector = None
+        collector.deleteLater()
+        self._scan_btn.setEnabled(True)
+        if self._closing_result is not None:
+            super().done(self._closing_result)
+
+    def done(self, result: int) -> None:
+        if self._collector is not None:
+            self._closing_result = result
+            self._cancel_scan()
+            return
+        super().done(result)

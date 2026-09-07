@@ -41,18 +41,22 @@ class Database:
         conn = self._get_conn()
         if sql.lstrip().upper().startswith("SELECT"):
             return conn.execute(sql, params)
-        with self._write_lock:
+        with self._write_lock, conn:
             cursor = conn.execute(sql, params)
-            conn.commit()
             return cursor
 
     def executemany(self, sql: str, params_list: list[tuple]) -> sqlite3.Cursor:
         """Execute a SQL statement with multiple parameter sets."""
         conn = self._get_conn()
-        with self._write_lock:
+        with self._write_lock, conn:
             cursor = conn.executemany(sql, params_list)
-            conn.commit()
             return cursor
+
+    def execute_batch(self, statements: list[tuple[str, tuple]]) -> list[int | None]:
+        """Commit related writes together, rolling back the entire batch on failure."""
+        conn = self._get_conn()
+        with self._write_lock, conn:
+            return [conn.execute(sql, params).lastrowid for sql, params in statements]
 
     def executescript(self, sql: str) -> None:
         """Execute a SQL script (multiple statements)."""

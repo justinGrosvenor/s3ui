@@ -83,6 +83,9 @@ class S3PaneWidget(QWidget):
     get_info_requested = pyqtSignal(object)  # S3Item
     files_dropped = pyqtSignal(list)  # list of local file paths (str) dropped onto S3 pane
     quick_open_requested = pyqtSignal(object)  # S3Item — double-click file opens it
+    rename_requested = pyqtSignal(object)  # S3Item
+    copy_requested = pyqtSignal(list)  # list of S3Item
+    selection_changed = pyqtSignal(list)  # list of S3Item currently selected
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -93,6 +96,7 @@ class S3PaneWidget(QWidget):
         self._history_forward: list[str] = []
         self._fetch_id: int = 0
         self._fetch_worker: _FetchWorker | None = None
+        self._fetch_workers: list[_FetchWorker] = []
         self._cache = ListingCache()
         self._connected = False
         self._operation_locks: dict[str, str] = {}
@@ -177,6 +181,9 @@ class S3PaneWidget(QWidget):
         self._table.doubleClicked.connect(self._on_double_click)
         self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._on_context_menu)
+        self._table.selectionModel().selectionChanged.connect(
+            lambda *_: self.selection_changed.emit(self.selected_items())
+        )
 
         # Accept drops on the viewport; handled via event filter
         self._table.setAcceptDrops(True)
@@ -209,15 +216,34 @@ class S3PaneWidget(QWidget):
 
     def set_client(self, s3_client: S3Client) -> None:
         """Set the S3 client to use for fetching."""
+        self.clear_connection()
         self._s3_client = s3_client
         self._connected = True
         self._placeholder.setVisible(False)
         self._table.setVisible(True)
 
+    def clear_connection(self) -> None:
+        """Invalidate every result and selection from the previous namespace."""
+        self._fetch_id += 1
+        self._s3_client = None
+        self._bucket = ""
+        self._current_prefix = ""
+        self._cache.invalidate_all()
+        self._model.clear()
+        self._connected = False
+        self._table.setVisible(False)
+        self._placeholder.setVisible(True)
+        self._status_label.setVisible(False)
+        self._history_back.clear()
+        self._history_forward.clear()
+        self._update_breadcrumb()
+        self._update_nav_buttons()
+
     def set_bucket(self, bucket_name: str) -> None:
         """Switch to a different bucket."""
         self._bucket = bucket_name
         self._cache.invalidate_all()
+        self._current_prefix = ""
         self._history_back.clear()
         self._history_forward.clear()
         self.navigate_to("")
@@ -226,6 +252,9 @@ class S3PaneWidget(QWidget):
         """Navigate to an S3 prefix."""
         if not self._s3_client or not self._bucket:
             return
+
+        # Even a cache hit supersedes the fetch for the previously viewed folder.
+        self._fetch_id += 1
 
         if record_history and self._current_prefix != prefix:
             self._history_back.append(self._current_prefix)
@@ -294,12 +323,24 @@ class S3PaneWidget(QWidget):
     def notify_upload_complete(self, key: str, size: int) -> None:
         """Optimistic: insert uploaded object into current listing."""
         prefix = self._current_prefix
+        if not key.startswith(prefix):
+            self._cache.invalidate(key.rpartition("/")[0] + "/")
+            return
         name = key[len(prefix) :] if prefix else key
         if "/" in name:
-            return  # Not in current directory level
+            folder = name.split("/", 1)[0]
+            self.notify_new_folder(prefix + folder + "/", folder)
+            self._cache.invalidate(key.rpartition("/")[0] + "/")
+            return
         item = S3Item(name=name, key=key, is_prefix=False, size=size)
+        self._model.remove_items({key})
         self._model.insert_item(item)
-        self._cache.apply_mutation(prefix, lambda items: items.append(item))
+
+        def upsert(items):
+            items[:] = [i for i in items if i.key != key]
+            items.append(item)
+
+        self._cache.apply_mutation(prefix, upsert)
         self._update_footer()
 
     def notify_delete_complete(self, keys: list[str]) -> None:
@@ -322,6 +363,12 @@ class S3PaneWidget(QWidget):
 
     def notify_new_folder(self, key: str, name: str) -> None:
         """Optimistic: insert a new prefix (folder)."""
+        prefix = self._current_prefix
+        if not key.startswith(prefix) or "/" in key[len(prefix) :].rstrip("/"):
+            self._cache.invalidate_all()
+            return
+        if any(self._model.get_item(i).key == key for i in range(self._model.item_count())):
+            return
         item = S3Item(name=name, key=key, is_prefix=True)
         self._model.insert_item(item)
         self._cache.apply_mutation(self._current_prefix, lambda items: items.append(item))
@@ -361,15 +408,21 @@ class S3PaneWidget(QWidget):
             worker.signals.listing_complete.connect(self._on_listing_complete)
 
         worker.signals.error.connect(self._on_fetch_error)
-        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda w=worker: self._discard_fetch(w))
         self._fetch_worker = worker
+        self._fetch_workers.append(worker)
         worker.start()
+
+    def _discard_fetch(self, worker: _FetchWorker) -> None:
+        if worker in self._fetch_workers:
+            self._fetch_workers.remove(worker)
+        if self._fetch_worker is worker:
+            self._fetch_worker = None
+        worker.deleteLater()
 
     def _on_listing_complete(self, prefix: str, items: list[S3Item], fetch_id: int) -> None:
         """Handle completion of a fresh fetch."""
-        if fetch_id != self._fetch_id:
-            # Stale fetch — cache the result but don't update UI
-            self._cache.put(prefix, items)
+        if fetch_id != self._fetch_id or prefix != self._current_prefix:
             return
 
         self._cache.put(prefix, items)
@@ -382,10 +435,10 @@ class S3PaneWidget(QWidget):
         self, prefix: str, items: list[S3Item], fetch_id: int, counter: int
     ) -> None:
         """Handle completion of a background revalidation."""
-        self._cache.safe_revalidate(prefix, items, counter)
-
         if fetch_id != self._fetch_id:
             return  # User navigated away
+
+        self._cache.safe_revalidate(prefix, items, counter)
 
         if prefix == self._current_prefix:
             cached = self._cache.get(prefix)
@@ -472,10 +525,23 @@ class S3PaneWidget(QWidget):
             download_action = menu.addAction("Download")
             download_action.triggered.connect(lambda: self.download_requested.emit(selected))
 
+            files = [i for i in selected if not i.is_prefix]
+            if files:
+                copy_action = menu.addAction("Copy")
+                copy_action.triggered.connect(lambda: self.copy_requested.emit(files))
+
             menu.addSeparator()
 
             delete_action = menu.addAction("Delete")
             delete_action.triggered.connect(lambda: self.delete_requested.emit(selected))
+
+            if len(selected) == 1 and not selected[0].is_prefix:
+                menu.addSeparator()
+                rename_action = menu.addAction("Rename...")
+                rename_action.triggered.connect(lambda: self.rename_requested.emit(selected[0]))
+
+                link_action = menu.addAction("Copy Presigned URL")
+                link_action.triggered.connect(lambda: self._copy_presigned_url(selected[0]))
 
             if len(selected) == 1:
                 menu.addSeparator()
@@ -489,6 +555,21 @@ class S3PaneWidget(QWidget):
             refresh_action.triggered.connect(self.refresh)
 
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _copy_presigned_url(self, item: S3Item) -> None:
+        """Generate a presigned GET URL for the item and copy it to the clipboard."""
+        if not self._s3_client or not self._bucket:
+            return
+        from PyQt6.QtWidgets import QApplication
+
+        try:
+            url = self._s3_client.generate_presigned_url(self._bucket, item.key)
+        except Exception as e:
+            logger.warning("Presigned URL failed for %s: %s", item.key, e)
+            self.status_message.emit(f"Failed to create link: {e}")
+            return
+        QApplication.clipboard().setText(url)
+        self.status_message.emit(f"Copied presigned URL for '{item.name}' (valid 1 hour)")
 
     # --- Operation lock manager ---
 

@@ -109,6 +109,70 @@ class TestRestorePending:
             assert row["status"] == "failed"
 
 
+class TestRestoreScoping:
+    def test_restore_only_own_bucket(self, db, bucket_id, profile, tmp_path, qtbot):
+        """restore_pending must not pick up another bucket's transfers."""
+        with mock_aws():
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
+            client = S3Client(profile)
+
+            other_bucket_id = db.execute(
+                "INSERT INTO buckets (name, region, profile) VALUES (?, ?, ?)",
+                ("other-bucket", "us-east-1", "test"),
+            ).lastrowid
+
+            src = tmp_path / "theirs.txt"
+            src.write_text("belongs to other-bucket")
+            other_tid = _create_upload(db, other_bucket_id, "theirs.txt", src, status="queued")
+
+            engine = TransferEngine(client, db, "test-bucket", max_workers=1)
+            engine.restore_pending()
+
+            # The other bucket's transfer must be untouched, not uploaded here
+            row = db.fetchone("SELECT status FROM transfers WHERE id = ?", (other_tid,))
+            assert row["status"] == "queued"
+            objects, _ = client.list_objects("test-bucket")
+            assert objects == []
+
+    def test_enqueue_skips_live_transfer(self, db, bucket_id, profile, tmp_path, qtbot):
+        """A transfer with a live worker is never given a second worker."""
+        with mock_aws():
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
+            client = S3Client(profile)
+
+            src = tmp_path / "once.txt"
+            src.write_text("data")
+            tid = _create_upload(db, bucket_id, "once.txt", src)
+
+            engine = TransferEngine(client, db, "test-bucket", max_workers=2)
+            finished = []
+            engine.transfer_finished.connect(lambda t: finished.append(t))
+
+            engine.enqueue(tid)
+            engine.enqueue(tid)  # duplicate — must be ignored
+
+            qtbot.waitUntil(lambda: len(finished) == 1, timeout=5000)
+            qtbot.wait(200)  # allow a would-be second worker to surface
+            assert len(finished) == 1
+
+
+class TestShutdown:
+    def test_shutdown_emits_drained_when_idle(self, db, bucket_id, profile, qtbot):
+        with mock_aws():
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
+            client = S3Client(profile)
+
+            engine = TransferEngine(client, db, "test-bucket", max_workers=1)
+            drained = []
+            engine.drained.connect(lambda: drained.append(True))
+            engine.shutdown()
+            assert drained == [True]
+
+            # A shut-down engine refuses new work
+            engine.enqueue(9999)
+            assert not engine._active
+
+
 class TestOrphanCleanup:
     def test_aborts_unknown_orphan(self, db, bucket_id, profile, tmp_path, qtbot):
         """Multipart uploads not in our DB get aborted (if old enough)."""

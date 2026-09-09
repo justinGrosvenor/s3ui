@@ -273,3 +273,88 @@ class TestEnqueueAndComplete:
 
             qtbot.waitUntil(lambda: len(finished) == 5, timeout=10000)
             assert len(finished) == 5
+
+
+class TestStartPending:
+    def test_fills_slots_without_per_id_enqueue(self, db, bucket_id, profile, tmp_path, qtbot):
+        """start_pending() drains the queue from SQLite in one call."""
+        with mock_aws():
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
+            client = S3Client(profile)
+
+            for i in range(5):
+                src = tmp_path / f"file{i}.txt"
+                src.write_text(f"data {i}")
+                _create_upload(db, bucket_id, f"file{i}.txt", src)
+
+            engine = TransferEngine(client, db, "test-bucket", max_workers=2)
+            finished = []
+            engine.transfer_finished.connect(lambda t: finished.append(t))
+
+            engine.start_pending()  # no per-transfer enqueue call
+
+            qtbot.waitUntil(lambda: len(finished) == 5, timeout=10000)
+            assert len(finished) == 5
+
+
+class TestCancelAll:
+    def test_cancels_queued_and_paused_in_bulk(self, db, bucket_id, profile, tmp_path, qtbot):
+        with mock_aws():
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
+            client = S3Client(profile)
+
+            queued = [
+                _create_upload(db, bucket_id, f"q{i}.txt", tmp_path / f"q{i}") for i in range(5)
+            ]
+            paused = _create_upload(db, bucket_id, "p.txt", tmp_path / "p", status="paused")
+
+            engine = TransferEngine(client, db, "test-bucket", max_workers=2)
+            engine.cancel_all()
+
+            for tid in [*queued, paused]:
+                row = db.fetchone("SELECT status FROM transfers WHERE id = ?", (tid,))
+                assert row["status"] == "cancelled"
+
+    def test_does_not_touch_other_buckets(self, db, bucket_id, profile, tmp_path, qtbot):
+        with mock_aws():
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
+            client = S3Client(profile)
+
+            other = db.execute(
+                "INSERT INTO buckets (name, region, profile) VALUES (?, ?, ?)",
+                ("other-bucket", "us-east-1", "test"),
+            ).lastrowid
+            mine = _create_upload(db, bucket_id, "mine.txt", tmp_path / "mine")
+            theirs = _create_upload(db, other, "theirs.txt", tmp_path / "theirs")
+
+            engine = TransferEngine(client, db, "test-bucket", max_workers=2)
+            engine.cancel_all()
+
+            assert db.fetchone("SELECT status FROM transfers WHERE id = ?", (mine,))["status"] == (
+                "cancelled"
+            )
+            assert (
+                db.fetchone("SELECT status FROM transfers WHERE id = ?", (theirs,))["status"]
+                == "queued"
+            )
+
+    def test_queue_stays_cancelled_after_start_pending(
+        self, db, bucket_id, profile, tmp_path, qtbot
+    ):
+        """restore/pick-next must not resurrect a cancelled queue."""
+        with mock_aws():
+            boto3.client("s3", region_name="us-east-1").create_bucket(Bucket="test-bucket")
+            client = S3Client(profile)
+
+            for i in range(4):
+                src = tmp_path / f"f{i}.txt"
+                src.write_text("x")
+                _create_upload(db, bucket_id, f"f{i}.txt", src)
+
+            engine = TransferEngine(client, db, "test-bucket", max_workers=2)
+            engine.cancel_all()
+            engine.start_pending()
+            qtbot.wait(200)
+
+            rows = db.fetchall("SELECT status FROM transfers WHERE bucket_id = ?", (bucket_id,))
+            assert all(r["status"] == "cancelled" for r in rows)

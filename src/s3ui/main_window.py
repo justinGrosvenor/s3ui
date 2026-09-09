@@ -248,6 +248,7 @@ class MainWindow(QMainWindow):
         self._transfer_panel.pause_requested.connect(self._on_pause_transfer)
         self._transfer_panel.resume_requested.connect(self._on_resume_transfer)
         self._transfer_panel.cancel_requested.connect(self._on_cancel_transfer)
+        self._transfer_panel.cancel_all_requested.connect(self._on_cancel_all_transfers)
         self._transfer_panel.retry_requested.connect(self._on_retry_transfer)
 
         logger.info("Main window initialized")
@@ -617,12 +618,15 @@ class MainWindow(QMainWindow):
         if engine is None:
             engine = TransferEngine(self._s3_client, self._db, bucket_name, profile=profile_name)
         self.set_transfer_engine(engine)
-        for row in self._db.fetchall(
+        rows = self._db.fetchall(
             "SELECT id FROM transfers WHERE bucket_id = ? "
-            "AND status IN ('queued', 'in_progress', 'paused', 'failed')",
+            "AND status IN ('queued', 'in_progress', 'paused', 'failed') "
+            "ORDER BY created_at ASC, id ASC",
             (self._ensure_bucket_id(),),
-        ):
-            self._transfer_panel.add_transfer(row["id"])
+        )
+        # Bulk insert: a bucket left with a huge queue must not re-freeze the UI
+        # on reconnect the way per-row adds did.
+        self._transfer_panel.add_transfers([row["id"] for row in rows])
         engine.restore_pending()
 
         # Retry failed aborts for this application's cancelled uploads only.
@@ -674,18 +678,36 @@ class MainWindow(QMainWindow):
             return
         engine = self._transfer_engine
         worker = UploadBatchWorker(self._db, bucket_id, self._s3_pane.current_prefix(), paths, self)
-        worker.batch_ready.connect(lambda ids: self._on_upload_batch(engine, ids))
+        worker.batch_ready.connect(lambda ids, w=worker: self._on_upload_batch(engine, w, ids))
         worker.failed.connect(lambda msg: self.set_status(f"Upload discovery failed: {msg}"))
         worker.finished.connect(lambda w=worker: self._discard_bg_worker(w))
         self._bg_workers.append(worker)
         self.set_status("Preparing uploads...")
         worker.start()
 
-    def _on_upload_batch(self, engine, ids: list[int]) -> None:
-        for tid in ids:
-            self._transfer_panel.add_transfer(tid)
-            if not self._closing:
-                engine.enqueue(tid)
+    def _on_upload_batch(self, engine, worker, ids: list[int]) -> None:
+        if not ids:
+            return
+        # App is closing: leave these rows 'queued' in SQLite so they resume on
+        # the next launch — don't start anything now.
+        if self._closing:
+            return
+        # Cancel-all fired while discovery was still running: these rows were
+        # just committed as 'queued', so mark them cancelled in bulk instead of
+        # starting them. Closes the race where a batch is emitted after
+        # cancel_all()'s sweep already ran.
+        if getattr(worker, "cancel_requested", False):
+            placeholders = ",".join("?" * len(ids))
+            self._db.execute(
+                "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') "
+                f"WHERE status IN ('queued', 'in_progress') AND id IN ({placeholders})",
+                tuple(ids),
+            )
+            return
+        # One model insertion and one pool prime per batch — never a per-file
+        # SELECT/enqueue, which is what froze the UI on huge selections.
+        self._transfer_panel.add_transfers(ids)
+        engine.start_pending()
 
     def _on_download_requested(self, items: list) -> None:
         """Handle download request from S3 pane context menu."""
@@ -1152,6 +1174,21 @@ class MainWindow(QMainWindow):
         engine = self._engine_for(tid)
         if engine:
             engine.retry(tid)
+
+    def _on_cancel_all_transfers(self) -> None:
+        """Stop every active + queued transfer and halt in-flight discovery."""
+        from s3ui.core.upload_batch import UploadBatchWorker
+
+        # Stop discovery first so it can't keep committing queued rows behind us.
+        for worker in self._bg_workers:
+            if isinstance(worker, UploadBatchWorker):
+                worker.cancel_requested = True
+                worker.requestInterruption()
+        for engine in [self._transfer_engine, *self._retired_engines]:
+            if isinstance(engine, TransferEngine):
+                engine.cancel_all()
+        self._transfer_panel.cancel_all_rows()
+        self.set_status("Cancelled all transfers")
 
     # --- Central widget: splitter with local + S3 panes ---
 

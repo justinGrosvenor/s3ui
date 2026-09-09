@@ -250,6 +250,42 @@ class TransferEngine(QObject):
             self.transfer_status_changed.emit(row["id"], "queued")
         self._pick_next()
 
+    def cancel_all(self) -> None:
+        """Cancel every queued, paused, and in-progress transfer for this bucket.
+
+        Queued/paused rows are marked cancelled in a single UPDATE rather than
+        one signal per transfer — the whole point is to escape a queue of
+        hundreds of thousands of files without freezing. Live workers are
+        stopped via their cancel events; each marks its own row cancelled and
+        aborts any multipart upload as it exits.
+        """
+        bucket_id = self._resolve_bucket_id()
+        if bucket_id is None:
+            return
+        self._resume_requested.clear()
+        # Stop the handful of running workers; they finalize their own rows.
+        for evt in self._cancel_events.values():
+            evt.set()
+        # Everything still waiting in SQLite: cancel in bulk so restore_pending
+        # and _pick_next can't resurrect it after a restart.
+        self._db.execute(
+            "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') "
+            "WHERE bucket_id = ? AND status IN ('queued', 'paused')",
+            (bucket_id,),
+        )
+        # A paused multipart upload keeps an upload_id; free those server-side
+        # off the GUI thread. Never-started uploads have none and are skipped.
+        self._pool.start(self.cleanup_orphaned_uploads)
+
+    def start_pending(self) -> None:
+        """Fill idle worker slots from the queued rows in SQLite.
+
+        Public entry point for the batch enqueue path: after a bulk insert we
+        prime the pool once instead of calling enqueue() per transfer (which
+        ran a full-row SELECT for every one of hundreds of thousands of files).
+        """
+        self._pick_next()
+
     def retry(self, transfer_id: int) -> None:
         """Retry a failed transfer."""
         if self._shutdown or not self.handles(transfer_id):

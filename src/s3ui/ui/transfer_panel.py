@@ -32,6 +32,7 @@ class TransferPanelWidget(QWidget):
     pause_requested = pyqtSignal(int)  # transfer_id
     resume_requested = pyqtSignal(int)  # transfer_id
     cancel_requested = pyqtSignal(int)  # transfer_id
+    cancel_all_requested = pyqtSignal()  # stop every active + queued transfer
     retry_requested = pyqtSignal(int)  # transfer_id
 
     def __init__(self, db: Database | None = None, parent=None) -> None:
@@ -63,6 +64,10 @@ class TransferPanelWidget(QWidget):
         self._pause_all_btn = QPushButton("Pause All")
         self._pause_all_btn.clicked.connect(self._on_pause_all)
         header.addWidget(self._pause_all_btn)
+
+        self._cancel_all_btn = QPushButton("Cancel All")
+        self._cancel_all_btn.clicked.connect(self._on_cancel_all)
+        header.addWidget(self._cancel_all_btn)
 
         header_widget = QWidget()
         header_widget.setLayout(header)
@@ -107,6 +112,14 @@ class TransferPanelWidget(QWidget):
         """Add a transfer to the panel."""
         self._model.add_transfer(transfer_id)
 
+    def add_transfers(self, transfer_ids: list[int]) -> None:
+        """Add a batch of transfers to the panel in one insertion."""
+        self._model.add_transfers(transfer_ids)
+
+    def cancel_all_rows(self) -> None:
+        """Mirror an engine-wide cancel in the model without per-row signals."""
+        self._model.cancel_all_rows()
+
     def _schedule_header_update(self) -> None:
         if not self._header_timer.isActive():
             self._header_timer.start()
@@ -137,6 +150,24 @@ class TransferPanelWidget(QWidget):
                 engine.pause_all()
             self._pause_all_btn.setText("Resume All")
             self._paused_global = True
+
+    def _on_cancel_all(self) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+
+        active = self._model.active_count()
+        queued = self._model.queued_count()
+        if not (active or queued):
+            return
+        reply = QMessageBox.question(
+            self,
+            "Cancel All Transfers",
+            f"Cancel all transfers? This stops {active} active and "
+            f"{queued} queued transfer(s), including any still being added.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self.cancel_all_requested.emit()
 
     def _on_context_menu(self, pos) -> None:
         from PyQt6.QtWidgets import QMenu

@@ -146,6 +146,84 @@ class TestTransferModel:
         assert model.queued_count() == 1
 
 
+def _seed_transfer(db, bucket_id, key, status="queued"):
+    return db.execute(
+        "INSERT INTO transfers (bucket_id, object_key, direction, local_path, status, "
+        "total_bytes, transferred) VALUES (?, ?, 'upload', ?, ?, 0, 0)",
+        (bucket_id, key, f"/tmp/{key}", status),
+    ).lastrowid
+
+
+class TestAddTransfers:
+    def _db(self, tmp_path):
+        from s3ui.db.database import Database
+
+        db = Database(tmp_path / "m.db")
+        bucket_id = db.execute(
+            "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
+        ).lastrowid
+        return db, bucket_id
+
+    def test_bulk_insert_preserves_order(self, qtbot, tmp_path):
+        db, bucket_id = self._db(tmp_path)
+        ids = [_seed_transfer(db, bucket_id, f"k{i}.txt") for i in range(200)]
+        model = TransferModel(db)
+
+        model.add_transfers(ids)
+
+        assert model.rowCount() == 200
+        assert [r.transfer_id for r in model._rows] == ids
+        assert model._id_to_row[ids[0]] == 0
+        assert model._id_to_row[ids[-1]] == 199
+        db.close()
+
+    def test_skips_already_present_and_duplicates(self, qtbot, tmp_path):
+        db, bucket_id = self._db(tmp_path)
+        a = _seed_transfer(db, bucket_id, "a.txt")
+        b = _seed_transfer(db, bucket_id, "b.txt")
+        model = TransferModel(db)
+
+        model.add_transfers([a, a, b, a])
+
+        assert model.rowCount() == 2
+        model.add_transfers([a, b])  # both already shown
+        assert model.rowCount() == 2
+        db.close()
+
+    def test_add_transfer_delegates(self, qtbot, tmp_path):
+        db, bucket_id = self._db(tmp_path)
+        a = _seed_transfer(db, bucket_id, "a.txt")
+        model = TransferModel(db)
+
+        model.add_transfer(a)
+
+        assert model.rowCount() == 1
+        db.close()
+
+
+class TestCancelAllRows:
+    def test_flips_non_terminal_to_cancelled(self, qtbot, tmp_path):
+        from s3ui.db.database import Database
+
+        db = Database(tmp_path / "c.db")
+        bucket_id = db.execute(
+            "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
+        ).lastrowid
+        statuses = ["queued", "in_progress", "paused", "completed", "failed"]
+        ids = {s: _seed_transfer(db, bucket_id, f"{s}.txt", status=s) for s in statuses}
+        model = TransferModel(db)
+        model.add_transfers(list(ids.values()))
+
+        model.cancel_all_rows()
+
+        by_id = {r.transfer_id: r for r in model._rows}
+        for s in ("queued", "in_progress", "paused"):
+            assert by_id[ids[s]].status == "cancelled"
+        assert by_id[ids["completed"]].status == "completed"
+        assert by_id[ids["failed"]].status == "failed"
+        db.close()
+
+
 class TestTransferPanel:
     def test_creates(self, qtbot):
         panel = TransferPanelWidget()
@@ -156,6 +234,35 @@ class TestTransferPanel:
         panel = TransferPanelWidget()
         qtbot.addWidget(panel)
         assert panel._pause_all_btn.text() == "Pause All"
+
+    def test_cancel_all_noop_when_idle(self, qtbot):
+        """With nothing active or queued, the button does not fire the signal."""
+        panel = TransferPanelWidget()
+        qtbot.addWidget(panel)
+        fired = []
+        panel.cancel_all_requested.connect(lambda: fired.append(True))
+        panel._on_cancel_all()  # no confirm dialog is raised when idle
+        assert fired == []
+
+    def test_cancel_all_emits_after_confirm(self, qtbot, monkeypatch, tmp_path):
+        from PyQt6.QtWidgets import QMessageBox
+
+        from s3ui.db.database import Database
+
+        db = Database(tmp_path / "p.db")
+        bucket_id = db.execute(
+            "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
+        ).lastrowid
+        panel = TransferPanelWidget(db=db)
+        qtbot.addWidget(panel)
+        panel.add_transfers([_seed_transfer(db, bucket_id, "q.txt")])
+
+        monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+        fired = []
+        panel.cancel_all_requested.connect(lambda: fired.append(True))
+        panel._on_cancel_all()
+        assert fired == [True]
+        db.close()
 
 
 class TestDeleteConfirmDialog:

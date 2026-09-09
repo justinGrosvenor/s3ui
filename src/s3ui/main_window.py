@@ -248,6 +248,8 @@ class MainWindow(QMainWindow):
         self._transfer_panel.pause_requested.connect(self._on_pause_transfer)
         self._transfer_panel.resume_requested.connect(self._on_resume_transfer)
         self._transfer_panel.cancel_requested.connect(self._on_cancel_transfer)
+        self._transfer_panel.cancel_all_requested.connect(self._on_cancel_all_transfers)
+        self._transfer_panel.clear_completed_requested.connect(self._on_clear_completed)
         self._transfer_panel.retry_requested.connect(self._on_retry_transfer)
 
         logger.info("Main window initialized")
@@ -617,12 +619,15 @@ class MainWindow(QMainWindow):
         if engine is None:
             engine = TransferEngine(self._s3_client, self._db, bucket_name, profile=profile_name)
         self.set_transfer_engine(engine)
-        for row in self._db.fetchall(
+        rows = self._db.fetchall(
             "SELECT id FROM transfers WHERE bucket_id = ? "
-            "AND status IN ('queued', 'in_progress', 'paused', 'failed')",
+            "AND status IN ('queued', 'in_progress', 'paused', 'failed') "
+            "ORDER BY created_at ASC, id ASC",
             (self._ensure_bucket_id(),),
-        ):
-            self._transfer_panel.add_transfer(row["id"])
+        )
+        # Bulk insert: a bucket left with a huge queue must not re-freeze the UI
+        # on reconnect the way per-row adds did.
+        self._transfer_panel.add_transfers([row["id"] for row in rows])
         engine.restore_pending()
 
         # Retry failed aborts for this application's cancelled uploads only.
@@ -674,18 +679,36 @@ class MainWindow(QMainWindow):
             return
         engine = self._transfer_engine
         worker = UploadBatchWorker(self._db, bucket_id, self._s3_pane.current_prefix(), paths, self)
-        worker.batch_ready.connect(lambda ids: self._on_upload_batch(engine, ids))
+        worker.batch_ready.connect(lambda ids, w=worker: self._on_upload_batch(engine, w, ids))
         worker.failed.connect(lambda msg: self.set_status(f"Upload discovery failed: {msg}"))
         worker.finished.connect(lambda w=worker: self._discard_bg_worker(w))
         self._bg_workers.append(worker)
         self.set_status("Preparing uploads...")
         worker.start()
 
-    def _on_upload_batch(self, engine, ids: list[int]) -> None:
-        for tid in ids:
-            self._transfer_panel.add_transfer(tid)
-            if not self._closing:
-                engine.enqueue(tid)
+    def _on_upload_batch(self, engine, worker, ids: list[int]) -> None:
+        if not ids:
+            return
+        # App is closing: leave these rows 'queued' in SQLite so they resume on
+        # the next launch — don't start anything now.
+        if self._closing:
+            return
+        # Cancel-all fired while discovery was still running: these rows were
+        # just committed as 'queued', so mark them cancelled in bulk instead of
+        # starting them. Closes the race where a batch is emitted after
+        # cancel_all()'s sweep already ran.
+        if getattr(worker, "cancel_requested", False):
+            placeholders = ",".join("?" * len(ids))
+            self._db.execute(
+                "UPDATE transfers SET status = 'cancelled', updated_at = datetime('now') "
+                f"WHERE status IN ('queued', 'in_progress') AND id IN ({placeholders})",
+                tuple(ids),
+            )
+            return
+        # One model insertion and one pool prime per batch — never a per-file
+        # SELECT/enqueue, which is what froze the UI on huge selections.
+        self._transfer_panel.add_transfers(ids)
+        engine.start_pending()
 
     def _on_download_requested(self, items: list) -> None:
         """Handle download request from S3 pane context menu."""
@@ -740,6 +763,24 @@ class MainWindow(QMainWindow):
         if engine:
             engine.enqueue(tid)
 
+    def _create_download_transfers(self, bucket_id: int, specs: list) -> list[int]:
+        """Batch-insert download rows and return their ids.
+
+        `specs` is a list of (object_key, local_path, size). Inserting in one
+        batch (and priming the pool once) keeps a huge folder download off the
+        per-file SELECT/enqueue path that used to freeze the UI on uploads.
+        """
+        if not specs:
+            return []
+        sql = (
+            "INSERT INTO transfers "
+            "(bucket_id, object_key, direction, local_path, status, total_bytes, transferred) "
+            "VALUES (?, ?, 'download', ?, 'queued', ?, 0)"
+        )
+        return self._db.execute_batch(
+            [(sql, (bucket_id, key, str(path), size)) for key, path, size in specs]
+        )
+
     def _enqueue_folder_download(self, prefix: str, dest_dir, bucket_id: int) -> None:
         """Enumerate a folder in the background, then enqueue its files."""
         bucket = self._bucket_combo.currentData()
@@ -773,30 +814,71 @@ class MainWindow(QMainWindow):
             return
 
         # Recreate the folder itself in the destination: for prefix "a/b/",
-        # object "a/b/c/d.txt" lands at dest_dir/"b/c/d.txt"
+        # object "a/b/c/d.txt" lands at dest_dir/"b/c/d.txt". Build the transfer
+        # rows in bounded chunks across event-loop ticks so a folder of hundreds
+        # of thousands of objects never blocks the GUI thread in one callback.
         parent_len = prefix.rstrip("/").rfind("/") + 1
-        count = 0
-        conflict_state: dict = {}
+        state = {"idx": 0, "count": 0, "dirs": set(), "conflict": {}}
+        self._download_folder_chunk(prefix, files, dest_dir, bucket, bucket_id, parent_len, state)
 
-        for obj in files:
+    def _download_folder_chunk(
+        self, prefix, files, dest_dir, bucket, bucket_id, parent_len, state
+    ) -> None:
+        """Enqueue one bounded slice of a folder download, then yield to the loop."""
+        if (
+            self._closing
+            or self._bucket_combo.currentData() != bucket
+            or self._ensure_bucket_id() != bucket_id
+        ):
+            return  # bucket/profile changed mid-download — stop scheduling chunks
+
+        CHUNK = 500
+        specs: list[tuple[str, object, int]] = []
+        idx = state["idx"]
+        end = min(idx + CHUNK, len(files))
+        cancelled = False
+
+        while idx < end:
+            obj = files[idx]
+            idx += 1
             local_path = self._safe_local_path(dest_dir, obj.key[parent_len:])
             if local_path is None:
                 logger.warning("Skipping unsafe object key: %s", obj.key)
                 continue
-            resolved = self._resolve_local_conflict(local_path, conflict_state)
+            resolved = self._resolve_local_conflict(local_path, state["conflict"])
             if resolved is None:
-                if conflict_state.get("cancelled"):
+                if state["conflict"].get("cancelled"):
+                    cancelled = True
                     break
                 continue
-            try:
-                resolved.parent.mkdir(parents=True, exist_ok=True)
-            except OSError as exc:
-                logger.warning("Cannot create download directory %s: %s", resolved.parent, exc)
-                continue
-            self._create_download_transfer(bucket_id, obj.key, resolved, obj.size or 0)
-            count += 1
+            # Dedupe mkdir: a big folder shares few parents — mkdir each once.
+            parent = resolved.parent
+            if parent not in state["dirs"]:
+                try:
+                    parent.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    logger.warning("Cannot create download directory %s: %s", parent, exc)
+                    continue
+                state["dirs"].add(parent)
+            specs.append((obj.key, resolved, obj.size or 0))
 
-        self.set_status(f"Downloading {count} file(s) from '{prefix}'...")
+        state["idx"] = idx
+        if specs:
+            ids = self._create_download_transfers(bucket_id, specs)
+            self._transfer_panel.add_transfers(ids)
+            if self._transfer_engine:
+                self._transfer_engine.start_pending()
+            state["count"] += len(ids)
+
+        if not cancelled and state["idx"] < len(files):
+            QTimer.singleShot(
+                0,
+                lambda: self._download_folder_chunk(
+                    prefix, files, dest_dir, bucket, bucket_id, parent_len, state
+                ),
+            )
+        else:
+            self.set_status(f"Downloading {state['count']} file(s) from '{prefix}'...")
 
     @staticmethod
     def _safe_local_path(dest_dir, rel: str):
@@ -1152,6 +1234,49 @@ class MainWindow(QMainWindow):
         engine = self._engine_for(tid)
         if engine:
             engine.retry(tid)
+
+    def _on_cancel_all_transfers(self) -> None:
+        """Stop every active + queued transfer and halt in-flight discovery."""
+        from s3ui.core.upload_batch import UploadBatchWorker
+
+        # Stop discovery first so it can't keep committing queued rows behind us.
+        for worker in self._bg_workers:
+            if isinstance(worker, UploadBatchWorker):
+                worker.cancel_requested = True
+                worker.requestInterruption()
+        for engine in [self._transfer_engine, *self._retired_engines]:
+            if isinstance(engine, TransferEngine):
+                engine.cancel_all()
+        # Drop the stopped rows from the list (and DB) so a 400k-file queue
+        # doesn't keep costing memory after it's cancelled.
+        self._clear_transfers({"queued", "in_progress", "paused", "cancelled"})
+        self.set_status("Cancelled all transfers")
+
+    def _on_clear_completed(self) -> None:
+        """Remove finished and cancelled transfers from the list and database."""
+        cleared = self._clear_transfers({"completed", "cancelled"})
+        if cleared:
+            self.set_status(f"Cleared {cleared} finished transfer(s)")
+
+    def _clear_transfers(self, statuses: set[str]) -> int:
+        """Remove model rows in `statuses` and delete the safe ones from the DB.
+
+        Only rows that are terminal in the DB and hold no server-side multipart
+        state are deleted; a cancelled row still carrying an upload_id is left
+        for orphan cleanup to abort first.
+        """
+        removed = self._transfer_panel.remove_by_status(statuses)
+        if not removed or self._db is None:
+            return len(removed)
+        for start in range(0, len(removed), 900):
+            chunk = removed[start : start + 900]
+            placeholders = ",".join("?" * len(chunk))
+            self._db.execute(
+                f"DELETE FROM transfers WHERE id IN ({placeholders}) "
+                "AND status IN ('completed', 'cancelled', 'failed') AND upload_id IS NULL",
+                tuple(chunk),
+            )
+        return len(removed)
 
     # --- Central widget: splitter with local + S3 panes ---
 

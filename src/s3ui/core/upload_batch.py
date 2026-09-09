@@ -15,6 +15,10 @@ class UploadBatchWorker(QThread):
         self._bucket_id = bucket_id
         self._prefix = prefix
         self._paths = paths
+        # Set by the GUI thread on "Cancel All" so a batch emitted mid-discovery
+        # is cancelled rather than started. Distinct from app-close interruption,
+        # where the queue is kept for resume.
+        self.cancel_requested = False
 
     def run(self):
         try:

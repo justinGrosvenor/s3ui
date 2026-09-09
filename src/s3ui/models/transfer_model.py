@@ -188,37 +188,100 @@ class TransferModel(QAbstractTableModel):
     # --- Public API ---
 
     def add_transfer(self, transfer_id: int) -> None:
-        """Add a transfer from the database."""
-        if self._db is None or transfer_id in self._id_to_row:
-            return
-        db_row = self._db.fetchone("SELECT * FROM transfers WHERE id = ?", (transfer_id,))
-        if not db_row:
+        """Add a single transfer from the database."""
+        self.add_transfers([transfer_id])
+
+    def add_transfers(self, transfer_ids: list[int]) -> None:
+        """Add many transfers in one model insertion.
+
+        Building each row with its own query and its own beginInsertRows cycle
+        is what froze the UI on huge folder selections (hundreds of thousands
+        of single-row inserts). Fetch the batch in one pass and insert the whole
+        span at once so a 400k-file drop stays responsive.
+        """
+        if self._db is None or not transfer_ids:
             return
 
         from pathlib import Path
 
-        filename = Path(db_row["local_path"]).name
+        # Preserve caller order, drop duplicates and anything already shown.
+        seen: set[int] = set()
+        wanted: list[int] = []
+        for tid in transfer_ids:
+            if tid in self._id_to_row or tid in seen:
+                continue
+            seen.add(tid)
+            wanted.append(tid)
+        if not wanted:
+            return
 
-        row = TransferRow(
-            transfer_id=transfer_id,
-            direction=db_row["direction"],
-            filename=filename,
-            local_path=db_row["local_path"],
-            s3_key=db_row["object_key"],
-            total_bytes=db_row["total_bytes"] or 0,
-            transferred_bytes=db_row["transferred"] or 0,
-            status=db_row["status"],
-        )
+        # Fetch in chunks to stay under SQLite's bound-parameter limit, then
+        # emit their rows in the caller's original order.
+        fetched: dict[int, object] = {}
+        for start in range(0, len(wanted), 900):
+            chunk = wanted[start : start + 900]
+            placeholders = ",".join("?" * len(chunk))
+            for db_row in self._db.fetchall(
+                f"SELECT * FROM transfers WHERE id IN ({placeholders})", tuple(chunk)
+            ):
+                fetched[db_row["id"]] = db_row
 
-        idx = len(self._rows)
-        self.beginInsertRows(QModelIndex(), idx, idx)
-        self._rows.append(row)
-        self._id_to_row[transfer_id] = idx
+        new_rows: list[TransferRow] = []
+        for tid in wanted:
+            db_row = fetched.get(tid)
+            if db_row is None:
+                continue
+            new_rows.append(
+                TransferRow(
+                    transfer_id=tid,
+                    direction=db_row["direction"],
+                    filename=Path(db_row["local_path"]).name,
+                    local_path=db_row["local_path"],
+                    s3_key=db_row["object_key"],
+                    total_bytes=db_row["total_bytes"] or 0,
+                    transferred_bytes=db_row["transferred"] or 0,
+                    status=db_row["status"],
+                )
+            )
+        if not new_rows:
+            return
+
+        first = len(self._rows)
+        last = first + len(new_rows) - 1
+        self.beginInsertRows(QModelIndex(), first, last)
+        for offset, row in enumerate(new_rows):
+            self._rows.append(row)
+            self._id_to_row[row.transfer_id] = first + offset
         self.endInsertRows()
         self.counts_changed.emit()
 
         if not self._timer.isActive():
             self._timer.start()
+
+    def remove_by_status(self, statuses) -> list[int]:
+        """Drop every row whose status is in `statuses`; return their ids.
+
+        Used to reclaim memory: a cancelled flood or a long run's worth of
+        completed rows are removed in one model reset rather than lingering
+        one dataclass per file. Returns the removed transfer ids so the caller
+        can delete them from the database in the same sweep.
+        """
+        statuses = set(statuses)
+        removed = [r.transfer_id for r in self._rows if r.status in statuses]
+        if not removed:
+            return []
+        self.beginResetModel()
+        self._rows = [r for r in self._rows if r.status not in statuses]
+        self._id_to_row = {r.transfer_id: i for i, r in enumerate(self._rows)}
+        for tid in removed:
+            self._pending_updates.pop(tid, None)
+        # Row indices changed; re-derive dirty rows for surviving pending updates.
+        self._dirty_rows = {
+            self._id_to_row[t] for t in self._pending_updates if t in self._id_to_row
+        }
+        self.endResetModel()
+        self.counts_changed.emit()
+        return removed
 
     def get_transfer_row(self, transfer_id: int) -> TransferRow | None:
         idx = self._id_to_row.get(transfer_id)

@@ -146,6 +146,106 @@ class TestTransferModel:
         assert model.queued_count() == 1
 
 
+def _seed_transfer(db, bucket_id, key, status="queued"):
+    return db.execute(
+        "INSERT INTO transfers (bucket_id, object_key, direction, local_path, status, "
+        "total_bytes, transferred) VALUES (?, ?, 'upload', ?, ?, 0, 0)",
+        (bucket_id, key, f"/tmp/{key}", status),
+    ).lastrowid
+
+
+class TestAddTransfers:
+    def _db(self, tmp_path):
+        from s3ui.db.database import Database
+
+        db = Database(tmp_path / "m.db")
+        bucket_id = db.execute(
+            "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
+        ).lastrowid
+        return db, bucket_id
+
+    def test_bulk_insert_preserves_order(self, qtbot, tmp_path):
+        db, bucket_id = self._db(tmp_path)
+        ids = [_seed_transfer(db, bucket_id, f"k{i}.txt") for i in range(200)]
+        model = TransferModel(db)
+
+        model.add_transfers(ids)
+
+        assert model.rowCount() == 200
+        assert [r.transfer_id for r in model._rows] == ids
+        assert model._id_to_row[ids[0]] == 0
+        assert model._id_to_row[ids[-1]] == 199
+        db.close()
+
+    def test_skips_already_present_and_duplicates(self, qtbot, tmp_path):
+        db, bucket_id = self._db(tmp_path)
+        a = _seed_transfer(db, bucket_id, "a.txt")
+        b = _seed_transfer(db, bucket_id, "b.txt")
+        model = TransferModel(db)
+
+        model.add_transfers([a, a, b, a])
+
+        assert model.rowCount() == 2
+        model.add_transfers([a, b])  # both already shown
+        assert model.rowCount() == 2
+        db.close()
+
+    def test_add_transfer_delegates(self, qtbot, tmp_path):
+        db, bucket_id = self._db(tmp_path)
+        a = _seed_transfer(db, bucket_id, "a.txt")
+        model = TransferModel(db)
+
+        model.add_transfer(a)
+
+        assert model.rowCount() == 1
+        db.close()
+
+
+class TestRemoveByStatus:
+    def _model(self, tmp_path):
+        from s3ui.db.database import Database
+
+        db = Database(tmp_path / "r.db")
+        bucket_id = db.execute(
+            "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
+        ).lastrowid
+        statuses = ["queued", "in_progress", "paused", "completed", "failed", "cancelled"]
+        ids = {s: _seed_transfer(db, bucket_id, f"{s}.txt", status=s) for s in statuses}
+        model = TransferModel(db)
+        model.add_transfers(list(ids.values()))
+        return db, model, ids
+
+    def test_removes_and_returns_ids(self, qtbot, tmp_path):
+        db, model, ids = self._model(tmp_path)
+
+        removed = model.remove_by_status({"completed", "cancelled"})
+
+        assert set(removed) == {ids["completed"], ids["cancelled"]}
+        left = {r.status for r in model._rows}
+        assert "completed" not in left and "cancelled" not in left
+        assert model.rowCount() == 4
+        # id_to_row rebuilt contiguously
+        assert sorted(model._id_to_row.values()) == [0, 1, 2, 3]
+        db.close()
+
+    def test_noop_when_nothing_matches(self, qtbot, tmp_path):
+        db, model, _ = self._model(tmp_path)
+        before = model.rowCount()
+
+        assert model.remove_by_status({"nonexistent"}) == []
+        assert model.rowCount() == before
+        db.close()
+
+    def test_cancel_all_style_removal(self, qtbot, tmp_path):
+        db, model, ids = self._model(tmp_path)
+
+        removed = model.remove_by_status({"queued", "in_progress", "paused", "cancelled"})
+
+        assert set(removed) == {ids["queued"], ids["in_progress"], ids["paused"], ids["cancelled"]}
+        assert {r.status for r in model._rows} == {"completed", "failed"}
+        db.close()
+
+
 class TestTransferPanel:
     def test_creates(self, qtbot):
         panel = TransferPanelWidget()
@@ -156,6 +256,62 @@ class TestTransferPanel:
         panel = TransferPanelWidget()
         qtbot.addWidget(panel)
         assert panel._pause_all_btn.text() == "Pause All"
+
+    def test_cancel_all_noop_when_idle(self, qtbot):
+        """With nothing active or queued, the button does not fire the signal."""
+        panel = TransferPanelWidget()
+        qtbot.addWidget(panel)
+        fired = []
+        panel.cancel_all_requested.connect(lambda: fired.append(True))
+        panel._on_cancel_all()  # no confirm dialog is raised when idle
+        assert fired == []
+
+    def test_cancel_all_emits_after_confirm(self, qtbot, monkeypatch, tmp_path):
+        from PyQt6.QtWidgets import QMessageBox
+
+        from s3ui.db.database import Database
+
+        db = Database(tmp_path / "p.db")
+        bucket_id = db.execute(
+            "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
+        ).lastrowid
+        panel = TransferPanelWidget(db=db)
+        qtbot.addWidget(panel)
+        panel.add_transfers([_seed_transfer(db, bucket_id, "q.txt")])
+
+        monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+        fired = []
+        panel.cancel_all_requested.connect(lambda: fired.append(True))
+        panel._on_cancel_all()
+        assert fired == [True]
+        db.close()
+
+    def test_clear_completed_button_emits(self, qtbot):
+        panel = TransferPanelWidget()
+        qtbot.addWidget(panel)
+        assert panel._clear_completed_btn.text() == "Clear Completed"
+        fired = []
+        panel.clear_completed_requested.connect(lambda: fired.append(True))
+        panel._clear_completed_btn.click()
+        assert fired == [True]
+
+    def test_remove_by_status_delegates(self, qtbot, tmp_path):
+        from s3ui.db.database import Database
+
+        db = Database(tmp_path / "rd.db")
+        bucket_id = db.execute(
+            "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
+        ).lastrowid
+        panel = TransferPanelWidget(db=db)
+        qtbot.addWidget(panel)
+        done = _seed_transfer(db, bucket_id, "done.txt", status="completed")
+        panel.add_transfers([done, _seed_transfer(db, bucket_id, "q.txt")])
+
+        removed = panel.remove_by_status({"completed"})
+
+        assert removed == [done]
+        assert panel._model.rowCount() == 1
+        db.close()
 
 
 class TestDeleteConfirmDialog:

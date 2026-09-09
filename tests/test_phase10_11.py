@@ -743,3 +743,61 @@ class TestUploadDownloadWiring:
         connected_window._s3_client.set_cost_tracker.assert_called_once_with(
             connected_window._cost_tracker
         )
+
+
+class TestClearAndBulkDownload:
+    def _bucket(self, db):
+        return db.execute(
+            "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
+        ).lastrowid
+
+    def _seed(self, db, bucket_id, key, status, upload_id=None):
+        return db.execute(
+            "INSERT INTO transfers "
+            "(bucket_id, object_key, direction, local_path, status, total_bytes, upload_id) "
+            "VALUES (?, ?, 'upload', ?, ?, 0, ?)",
+            (bucket_id, key, f"/tmp/{key}", status, upload_id),
+        ).lastrowid
+
+    def test_clear_transfers_deletes_only_safe_terminal_rows(self, qtbot, db):
+        window = MainWindow(db=db, auto_connect=False)
+        qtbot.addWidget(window)
+        bucket_id = self._bucket(db)
+        done = self._seed(db, bucket_id, "done.txt", "completed")
+        canc = self._seed(db, bucket_id, "canc.txt", "cancelled")
+        canc_mp = self._seed(db, bucket_id, "canc_mp.txt", "cancelled", upload_id="U123")
+        failed = self._seed(db, bucket_id, "failed.txt", "failed")
+        queued = self._seed(db, bucket_id, "queued.txt", "queued")
+        window._transfer_panel.add_transfers([done, canc, canc_mp, failed, queued])
+
+        removed = window._clear_transfers({"completed", "cancelled"})
+
+        # Both completed and cancelled rows leave the list (3 of them).
+        assert removed == 3
+        assert window._transfer_panel.model.rowCount() == 2
+
+        def status(tid):
+            row = db.fetchone("SELECT status FROM transfers WHERE id = ?", (tid,))
+            return row["status"] if row else None
+
+        assert status(done) is None  # deleted from DB
+        assert status(canc) is None  # deleted (no multipart)
+        assert status(canc_mp) == "cancelled"  # kept: multipart awaits orphan cleanup
+        assert status(failed) == "failed"  # untouched (not in clear set)
+        assert status(queued) == "queued"  # untouched
+
+    def test_create_download_transfers_batches(self, qtbot, db):
+        window = MainWindow(db=db, auto_connect=False)
+        qtbot.addWidget(window)
+        bucket_id = self._bucket(db)
+        specs = [(f"folder/f{i}.txt", f"/tmp/dl/f{i}.txt", i) for i in range(50)]
+
+        ids = window._create_download_transfers(bucket_id, specs)
+
+        assert len(ids) == 50
+        rows = db.fetchall(
+            "SELECT direction, status FROM transfers WHERE bucket_id = ?", (bucket_id,)
+        )
+        assert len(rows) == 50
+        assert all(r["direction"] == "download" and r["status"] == "queued" for r in rows)
+        assert window._create_download_transfers(bucket_id, []) == []

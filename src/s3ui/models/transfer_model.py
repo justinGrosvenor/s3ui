@@ -258,26 +258,30 @@ class TransferModel(QAbstractTableModel):
         if not self._timer.isActive():
             self._timer.start()
 
-    def cancel_all_rows(self) -> None:
-        """Flip every non-terminal row to cancelled in one shot.
+    def remove_by_status(self, statuses) -> list[int]:
+        """Drop every row whose status is in `statuses`; return their ids.
 
-        The engine cancels the DB rows in bulk without emitting a signal per
-        transfer (that would be as slow as the flood we're escaping), so the
-        model mirrors the change locally and repaints the whole table once.
+        Used to reclaim memory: a cancelled flood or a long run's worth of
+        completed rows are removed in one model reset rather than lingering
+        one dataclass per file. Returns the removed transfer ids so the caller
+        can delete them from the database in the same sweep.
         """
-        changed = False
-        for row in self._rows:
-            if row.status in ("queued", "in_progress", "paused"):
-                row.status = "cancelled"
-                row.speed_bps = 0.0
-                row.eta_seconds = 0.0
-                changed = True
-        if not changed:
-            return
-        top_left = self.index(0, 0)
-        bottom_right = self.index(len(self._rows) - 1, _COLUMN_COUNT - 1)
-        self.dataChanged.emit(top_left, bottom_right)
+        statuses = set(statuses)
+        removed = [r.transfer_id for r in self._rows if r.status in statuses]
+        if not removed:
+            return []
+        self.beginResetModel()
+        self._rows = [r for r in self._rows if r.status not in statuses]
+        self._id_to_row = {r.transfer_id: i for i, r in enumerate(self._rows)}
+        for tid in removed:
+            self._pending_updates.pop(tid, None)
+        # Row indices changed; re-derive dirty rows for surviving pending updates.
+        self._dirty_rows = {
+            self._id_to_row[t] for t in self._pending_updates if t in self._id_to_row
+        }
+        self.endResetModel()
         self.counts_changed.emit()
+        return removed
 
     def get_transfer_row(self, transfer_id: int) -> TransferRow | None:
         idx = self._id_to_row.get(transfer_id)

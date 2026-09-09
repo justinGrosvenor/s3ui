@@ -201,26 +201,48 @@ class TestAddTransfers:
         db.close()
 
 
-class TestCancelAllRows:
-    def test_flips_non_terminal_to_cancelled(self, qtbot, tmp_path):
+class TestRemoveByStatus:
+    def _model(self, tmp_path):
         from s3ui.db.database import Database
 
-        db = Database(tmp_path / "c.db")
+        db = Database(tmp_path / "r.db")
         bucket_id = db.execute(
             "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
         ).lastrowid
-        statuses = ["queued", "in_progress", "paused", "completed", "failed"]
+        statuses = ["queued", "in_progress", "paused", "completed", "failed", "cancelled"]
         ids = {s: _seed_transfer(db, bucket_id, f"{s}.txt", status=s) for s in statuses}
         model = TransferModel(db)
         model.add_transfers(list(ids.values()))
+        return db, model, ids
 
-        model.cancel_all_rows()
+    def test_removes_and_returns_ids(self, qtbot, tmp_path):
+        db, model, ids = self._model(tmp_path)
 
-        by_id = {r.transfer_id: r for r in model._rows}
-        for s in ("queued", "in_progress", "paused"):
-            assert by_id[ids[s]].status == "cancelled"
-        assert by_id[ids["completed"]].status == "completed"
-        assert by_id[ids["failed"]].status == "failed"
+        removed = model.remove_by_status({"completed", "cancelled"})
+
+        assert set(removed) == {ids["completed"], ids["cancelled"]}
+        left = {r.status for r in model._rows}
+        assert "completed" not in left and "cancelled" not in left
+        assert model.rowCount() == 4
+        # id_to_row rebuilt contiguously
+        assert sorted(model._id_to_row.values()) == [0, 1, 2, 3]
+        db.close()
+
+    def test_noop_when_nothing_matches(self, qtbot, tmp_path):
+        db, model, _ = self._model(tmp_path)
+        before = model.rowCount()
+
+        assert model.remove_by_status({"nonexistent"}) == []
+        assert model.rowCount() == before
+        db.close()
+
+    def test_cancel_all_style_removal(self, qtbot, tmp_path):
+        db, model, ids = self._model(tmp_path)
+
+        removed = model.remove_by_status({"queued", "in_progress", "paused", "cancelled"})
+
+        assert set(removed) == {ids["queued"], ids["in_progress"], ids["paused"], ids["cancelled"]}
+        assert {r.status for r in model._rows} == {"completed", "failed"}
         db.close()
 
 
@@ -262,6 +284,33 @@ class TestTransferPanel:
         panel.cancel_all_requested.connect(lambda: fired.append(True))
         panel._on_cancel_all()
         assert fired == [True]
+        db.close()
+
+    def test_clear_completed_button_emits(self, qtbot):
+        panel = TransferPanelWidget()
+        qtbot.addWidget(panel)
+        assert panel._clear_completed_btn.text() == "Clear Completed"
+        fired = []
+        panel.clear_completed_requested.connect(lambda: fired.append(True))
+        panel._clear_completed_btn.click()
+        assert fired == [True]
+
+    def test_remove_by_status_delegates(self, qtbot, tmp_path):
+        from s3ui.db.database import Database
+
+        db = Database(tmp_path / "rd.db")
+        bucket_id = db.execute(
+            "INSERT INTO buckets (name, region, profile) VALUES ('b', '', 'p')"
+        ).lastrowid
+        panel = TransferPanelWidget(db=db)
+        qtbot.addWidget(panel)
+        done = _seed_transfer(db, bucket_id, "done.txt", status="completed")
+        panel.add_transfers([done, _seed_transfer(db, bucket_id, "q.txt")])
+
+        removed = panel.remove_by_status({"completed"})
+
+        assert removed == [done]
+        assert panel._model.rowCount() == 1
         db.close()
 
 

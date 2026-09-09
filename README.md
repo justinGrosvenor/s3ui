@@ -50,6 +50,18 @@ pip install s3ui
 
 Requires Python 3.11+ and a running display server (X11, Wayland, macOS, or Windows).
 
+### System requirements
+
+| Platform | Minimum version |
+|---|---|
+| Windows | Windows 10 |
+| macOS | macOS 11 (Big Sur) |
+| Linux | glibc 2.28+ (e.g. Ubuntu 20.04, Debian 10) with X11 or Wayland |
+
+> **Windows 7 and 8.1 are not supported.** S3UI bundles Python 3.12 (Python 3.9+ dropped
+> Windows 7) and is built on Qt 6, which requires Windows 10 or later. On older Windows you'll
+> see `Failed to load Python DLL … python312.dll` — this is the OS limit, not a corrupt install.
+
 ## Quick start
 
 ```

@@ -14,15 +14,20 @@ concurrency:
 env:
   BUILD_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || format('candidate-{0}', github.run_number) }}
 
+permissions:
+  contents: read
+
 jobs:
   build-macos:
     runs-on: macos-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -53,13 +58,13 @@ jobs:
           fi
 
       - name: Upload DMG artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: S3UI-macos-dmg
           path: S3UI-*.dmg
 
       - name: Attach DMG to GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: S3UI-*.dmg

@@ -43,6 +43,7 @@ dev = [
     "moto[s3]>=4.0",
     "ruff==0.14.14",
     "pre-commit>=3.0",
+    "virtualenv>=21.14.13",
     "pyinstaller>=6.0",
 ]
 

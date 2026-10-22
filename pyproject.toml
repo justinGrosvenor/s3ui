@@ -29,6 +29,8 @@ classifiers = [
     "Topic :: System :: Archiving",
 ]
 dependencies = [
+    # Updated WebPKI roots after the October 2026 eMudhra compromise.
+    "certifi>=2026.10.19",
     "PyQt6>=6.5",
     "boto3>=1.28",
     "keyring>=25.7",
